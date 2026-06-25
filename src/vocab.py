@@ -22,7 +22,6 @@ class Vocab:
         self.digite_token_to_id: Set[int] = self._classify(
             string.digits + ".-"
         )
-        self.quote_token_id: int = self._find_single_char_token('"')
         self.non_quote_ids: List[int] = []
         self.quote_ids: List[int] = []
         self._classify_quotes()
