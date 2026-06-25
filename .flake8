@@ -1,0 +1,9 @@
+[flake8]
+exclude =
+    .venv,
+    present-me-maybe,
+    llm_sdk,
+    moulinette,
+    __pycache__,
+    .mypy_cache,
+    scratch_debug.py
