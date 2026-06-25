@@ -6,7 +6,6 @@ class TrieNode(BaseModel):
     """Single node in the token_id trie"""
 
     children: Dict[int, "TrieNode"] = Field(default_factory=dict)
-    is_leaf: bool = False
     value: Optional[str] = None
 
 
@@ -26,7 +25,6 @@ class Trie(BaseModel):
             if tid not in node.children:
                 node.children[tid] = TrieNode()
             node = node.children[tid]
-        node.is_leaf = True
         node.value = value
 
     def allowed_next_ids(self, node: TrieNode) -> List[int]:

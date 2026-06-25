@@ -85,7 +85,6 @@ class Function_parse:
 
     def __init__(self, file_name: str) -> None:
         self.file_name: str = file_name
-        self.function: List[FunctionDefinition] = []
         self.functions_dict: Dict[str, FunctionDefinition] = {}
 
     def open_file(self) -> List[Any]:
@@ -139,5 +138,4 @@ class Function_parse:
             raise ValueError(
                 f"Error: Duplicate Function Name: {fn_object.name}"
             )
-        self.function.append(fn_object)
         self.functions_dict[fn_object.name] = fn_object
