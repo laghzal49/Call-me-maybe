@@ -22,14 +22,9 @@ llm-sdk = { workspace = true }
 [tool.mypy]
 mypy_path = "llm_sdk"
 exclude = [
-    "^present-me-maybe/",
     "^llm_sdk/",
-    "^moulinette/",
     "^\\.venv/",
-    "^scratch_debug\\.py",
-    "^Call-me-maybe/"
+    "^Call-me-maybe/",
+    "^moulinette/",
+    "^present-me-maybe/"
 ]
-
-
-
-

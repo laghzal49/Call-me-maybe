@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import numpy as np
 import json
 import re
@@ -9,76 +9,52 @@ from src.vocab import Vocab
 from src.parsing import FunctionDefinition
 
 
-def mask_logits(logits: List[float], allowed_ids: List[int]) -> int:
-    """Mask logits of all tokens not in allowed_ids.
-
-    Returns the argmax token ID.
-    """
+def _mask_logits(logits: List[float], allowed_ids: List[int]) -> int:
+    """Return argmax token id among allowed_ids."""
     if not allowed_ids:
         return 0
-    # For small allowed sets (functions, booleans), a pure Python scan has
-    # zero overhead
     if len(allowed_ids) < 1000:
         best_id = allowed_ids[0]
         best_val = logits[best_id]
         for tid in allowed_ids[1:]:
-            val = logits[tid]
-            if val > best_val:
-                best_val = val
+            if logits[tid] > best_val:
+                best_val = logits[tid]
                 best_id = tid
         return best_id
-    # For large allowed sets (strings), we use fast NumPy vector indexing
-    else:
-        np_logits = np.array(logits, dtype=np.float32)
-        sub_argmax = np.argmax(np_logits[allowed_ids])
-        return int(allowed_ids[sub_argmax])
+    arr = np.array(logits, dtype=np.float32)
+    return int(allowed_ids[int(np.argmax(arr[allowed_ids]))])
 
 
-def pick_from_trie(
+def _pick_from_trie(
     llm: Small_LLM_Model, trie: Trie, input_ids: List[int]
 ) -> str:
     """Generate tokens constrained by the Trie until a leaf is reached."""
     node = trie.root
     generated: List[int] = []
-    while True:
-        allowed = trie.allowed_next_ids(node)
-        if not allowed:
-            break
+    while (allowed := trie.allowed_next_ids(node)):
         logits = llm.get_logits_from_input_ids(input_ids + generated)
-        next_id = mask_logits(logits, allowed)
+        next_id = _mask_logits(logits, allowed)
         node = trie.step(node, next_id)
         generated.append(next_id)
-
     if node.value is None:
-        raise ValueError(
-            "Error: generation ended without reaching a leaf node in the Trie"
-        )
+        raise ValueError("Trie generation ended without reaching a leaf")
     return node.value
 
 
-def generate_number(
-    llm: Small_LLM_Model,
-    vocab: Vocab,
-    input_ids: List[int],
-    stop_ids: List[int],
-    max_tokens: int = 15,
-) -> str:
-    """Generate digits, dots, or dashes until a stop token is sampled."""
-    generated: List[int] = []
-    allowed = list(vocab.digite_token_to_id) + stop_ids
-
-    for _ in range(max_tokens):
-        logits = llm.get_logits_from_input_ids(input_ids + generated)
-        next_id = mask_logits(logits, allowed)
-        if next_id in stop_ids:
-            break
-        generated.append(next_id)
-
-    return llm.decode(generated).strip()
+def _build_trie(
+    llm: Small_LLM_Model, prefix: str, entries: Dict[str, str]
+) -> Trie:
+    """Build a Trie from a {label: value} mapping with a shared prefix."""
+    trie = Trie()
+    prefix_ids = llm.encode(prefix)[0].tolist()
+    for label, value in entries.items():
+        full_ids = llm.encode(prefix + label)[0].tolist()
+        trie.insert(full_ids[len(prefix_ids):], value)
+    return trie
 
 
-def safe_unescape_json_string(s: str) -> str:
-    """Safely decode JSON string escaping backslashes and double quotes."""
+def _unescape(s: str) -> str:
+    """Safely unescape a JSON string value."""
     try:
         res = json.loads(f'"{s}"')
         return res if isinstance(res, str) else s
@@ -86,224 +62,127 @@ def safe_unescape_json_string(s: str) -> str:
         if s.endswith('\\') and not s.endswith('\\\\'):
             s += '\\'
         try:
-            res2 = json.loads(f'"{s}"')
-            return res2 if isinstance(res2, str) else s
+            res = json.loads(f'"{s}"')
+            return res if isinstance(res, str) else s
         except json.JSONDecodeError:
             return s
 
 
-def generate_string(
-    llm: Small_LLM_Model,
-    vocab: Vocab,
-    input_ids: List[int],
+def _generate_string(
+    llm: Small_LLM_Model, vocab: Vocab, input_ids: List[int],
     max_tokens: int = 50,
 ) -> str:
-    """Generate string characters until an unescaped quote is chosen."""
+    """Generate string tokens until an unescaped quote is chosen."""
     generated: List[int] = []
     allowed = vocab.non_quote_ids + vocab.quote_ids
-
     for _ in range(max_tokens):
         logits = llm.get_logits_from_input_ids(input_ids + generated)
-        next_id = mask_logits(logits, allowed)
+        next_id = _mask_logits(logits, allowed)
         if next_id in vocab.quote_ids:
             token_str = llm.decode([next_id])
             match = re.search(r'(?<!\\)(?:\\\\)*"', token_str)
             if match:
                 prefix = token_str[:match.start()]
-                decoded_so_far = llm.decode(generated)
-                return safe_unescape_json_string(decoded_so_far + prefix)
+                return _unescape(llm.decode(generated) + prefix)
             break
         generated.append(next_id)
-
-    return safe_unescape_json_string(llm.decode(generated))
-
-
-def _build_fn_trie(
-    llm: Small_LLM_Model,
-    available_functions: Dict[str, FunctionDefinition],
-) -> Trie:
-    """Build a Trie representing all available function names in context."""
-    fn_trie = Trie()
-    prefix = "\nJSON: { \"name\": \""
-    prefix_ids = llm.encode(prefix)[0].tolist()
-    for fn_name in available_functions:
-        full_text = prefix + fn_name
-        full_ids = llm.encode(full_text)[0].tolist()
-        token_ids = full_ids[len(prefix_ids):]
-        fn_trie.insert(token_ids, fn_name)
-    return fn_trie
+    return _unescape(llm.decode(generated))
 
 
-def _build_bool_trie(llm: Small_LLM_Model) -> Trie:
-    """Build a Trie representing boolean values in context."""
-    bool_trie = Trie()
-    prefix = "\": "
-    prefix_ids = llm.encode(prefix)[0].tolist()
-
-    full_ids_true = llm.encode(prefix + "true")[0].tolist()
-    bool_trie.insert(full_ids_true[len(prefix_ids):], "true")
-
-    full_ids_false = llm.encode(prefix + "false")[0].tolist()
-    bool_trie.insert(full_ids_false[len(prefix_ids):], "false")
-    return bool_trie
-
-
-def _decode_boolean(
-    llm: Small_LLM_Model, bool_trie: Trie, input_ids: List[int]
-) -> bool:
-    """Decode a boolean value using the bool trie constraint."""
-    try:
-        chosen_bool_str = pick_from_trie(llm, bool_trie, input_ids)
-        return chosen_bool_str == "true"
-    except ValueError:
-        return False
+def _generate_number(
+    llm: Small_LLM_Model, vocab: Vocab, input_ids: List[int],
+    stop_ids: List[int], max_tokens: int = 15,
+) -> str:
+    """Generate digit/dot/dash tokens until a stop token."""
+    generated: List[int] = []
+    allowed = list(vocab.digit_ids) + stop_ids
+    for _ in range(max_tokens):
+        logits = llm.get_logits_from_input_ids(input_ids + generated)
+        next_id = _mask_logits(logits, allowed)
+        if next_id in stop_ids:
+            break
+        generated.append(next_id)
+    return llm.decode(generated).strip()
 
 
-def _decode_number(
-    llm: Small_LLM_Model, vocab: Vocab, input_ids: List[int], is_integer: bool
+def _decode_param(
+    llm: Small_LLM_Model, vocab: Vocab, schema: Any,
+    context: str, input_ids: List[int], bool_trie: Trie,
 ) -> Any:
-    """Decode a numeric value (either float or integer)."""
-    stop_chars = [",", "}", "\n", " ", '"']
-    stop_ids: List[int] = []
-    for sc in stop_chars:
-        try:
-            stop_ids.append(vocab._find_single_char_token(sc))
-        except ValueError:
-            pass
-
-    num_str = generate_number(llm, vocab, input_ids, stop_ids)
-    try:
-        if is_integer:
-            return int(float(num_str)) if num_str else 0
-        else:
-            return float(num_str) if num_str else 0.0
-    except ValueError:
-        return 0 if is_integer else 0.0
-
-
-def _decode_string(
-    llm: Small_LLM_Model, vocab: Vocab, param_context: str
-) -> str:
-    """Decode a string parameter value."""
-    # Prefix opening double quote
-    param_context_with_quote = param_context + '"'
-    input_ids = llm.encode(param_context_with_quote)[0].tolist()
-    return generate_string(llm, vocab, input_ids)
-
-
-def _build_param_context(
-    prompt_text: str,
-    chosen_fn_name: str,
-    extracted_params: Dict[str, Any],
-    param_name: str,
-) -> str:
-    """Format JSON prefix up to parameter currently being generated."""
-    current_state = {
-        "name": chosen_fn_name,
-        "parameters": extracted_params
-    }
-    serialized = json.dumps(current_state)
-    # Strip the trailing "}}" of the parameters dictionary
-    truncated = serialized[:-2]
-    # Match the prefix spacing style: { "name":
-    if truncated.startswith('{"name":'):
-        truncated = '{ "name":' + truncated[8:]
-    separator = ", " if extracted_params else ""
-    return (
-        f"User: {prompt_text}\n"
-        f"JSON: {truncated}{separator}\"{param_name}\": "
-    )
-
-
-def _select_function(
-    llm: Small_LLM_Model,
-    prompt_text: str,
-    available_functions: Dict[str, FunctionDefinition],
-    fn_trie: Trie,
-) -> str:
-    """Select the function name from available functions using LLM & Trie."""
-    fn_list = [fn.dict() for fn in available_functions.values()]
-    functions_context_str = json.dumps(fn_list, indent=2)
-    context = (
-        f"Available Functions:\n{functions_context_str}\n\n"
-        f"User: {prompt_text}\n"
-        f"JSON: {{ \"name\": \""
-    )
-    input_ids = llm.encode(context)[0].tolist()
-    try:
-        return pick_from_trie(llm, fn_trie, input_ids)
-    except ValueError as e:
-        import sys
-        print(f"DEBUG pick_from_trie failed: {e}", file=sys.stderr)
-        return list(available_functions.keys())[0]
-
-
-def _decode_parameter(
-    llm: Small_LLM_Model,
-    vocab: Vocab,
-    schema: Any,
-    param_context: str,
-    input_ids: List[int],
-    bool_trie: Trie,
-) -> Any:
-    """Decode a single parameter value based on its type schema."""
+    """Decode a single parameter value based on its type."""
     if schema.type == "boolean":
-        return _decode_boolean(llm, bool_trie, input_ids)
+        try:
+            return _pick_from_trie(llm, bool_trie, input_ids) == "true"
+        except ValueError:
+            return False
     if schema.type in ("number", "integer"):
-        return _decode_number(
-            llm, vocab, input_ids, is_integer=(schema.type == "integer")
-        )
+        stop_ids = []
+        for ch in (",", "}", "\n", " ", '"'):
+            try:
+                stop_ids.append(vocab.find_char_token(ch))
+            except ValueError:
+                pass
+        num = _generate_number(llm, vocab, input_ids, stop_ids)
+        try:
+            return int(float(num)) if schema.type == "integer" else float(num)
+        except ValueError:
+            return 0 if schema.type == "integer" else 0.0
     if schema.type == "string":
-        return _decode_string(llm, vocab, param_context)
+        ids = llm.encode(context + '"')[0].tolist()
+        return _generate_string(llm, vocab, ids)
     return None
 
 
-def _decode_parameters(
-    llm: Small_LLM_Model,
-    vocab: Vocab,
-    prompt_text: str,
-    chosen_fn_name: str,
-    target_fn: Optional[FunctionDefinition],
-    bool_trie: Trie,
-) -> Dict[str, Any]:
-    """Decode parameter values sequentially for the chosen function."""
-    extracted_params: Dict[str, Any] = {}
-    if target_fn and target_fn.parameters:
-        for param_name, schema in target_fn.parameters.items():
-            param_context = _build_param_context(
-                prompt_text, chosen_fn_name, extracted_params, param_name
-            )
-            input_ids = llm.encode(param_context)[0].tolist()
-            extracted_params[param_name] = _decode_parameter(
-                llm,
-                vocab,
-                schema,
-                param_context,
-                input_ids,
-                bool_trie,
-            )
-    return extracted_params
+def _param_context(
+    prompt: str, fn_name: str,
+    params: Dict[str, Any], param_name: str,
+) -> str:
+    """Build the JSON context prefix for the next parameter."""
+    state = json.dumps({"name": fn_name, "parameters": params})
+    truncated = state[:-2]
+    if truncated.startswith('{"name":'):
+        truncated = '{ "name":' + truncated[8:]
+    sep = ", " if params else ""
+    return f"User: {prompt}\nJSON: {truncated}{sep}\"{param_name}\": "
 
 
 def generate_json(
-    llm: Small_LLM_Model,
-    vocab: Vocab,
-    prompt_text: str,
-    available_functions: Dict[str, FunctionDefinition],
+    llm: Small_LLM_Model, vocab: Vocab,
+    prompt: str,
+    functions: Dict[str, FunctionDefinition],
 ) -> str:
-    """Runs fully constrained token pipeline for an input user query."""
-    fn_trie = _build_fn_trie(llm, available_functions)
-    bool_trie = _build_bool_trie(llm)
-    chosen_fn_name = _select_function(
-        llm, prompt_text, available_functions, fn_trie
+    """Run fully constrained decoding pipeline for one user query."""
+    # Build tries
+    fn_trie = _build_trie(
+        llm, '\nJSON: { "name": "',
+        {name: name for name in functions},
     )
-    target_fn = available_functions.get(chosen_fn_name)
-    extracted_params = _decode_parameters(
-        llm, vocab, prompt_text, chosen_fn_name, target_fn, bool_trie
+    bool_trie = _build_trie(llm, '": ', {"true": "true", "false": "false"})
+
+    # Select function
+    fn_list = [fn.dict() for fn in functions.values()]
+    context = (
+        f"Available Functions:\n{json.dumps(fn_list, indent=2)}\n\n"
+        f"User: {prompt}\n"
+        f'JSON: {{ "name": "'
     )
-    final_output = {
-        "prompt": prompt_text,
-        "name": chosen_fn_name,
-        "parameters": extracted_params,
-    }
-    return json.dumps(final_output, indent=2)
+    input_ids = llm.encode(context)[0].tolist()
+    try:
+        fn_name = _pick_from_trie(llm, fn_trie, input_ids)
+    except ValueError:
+        fn_name = list(functions.keys())[0]
+
+    # Decode parameters
+    params: Dict[str, Any] = {}
+    target = functions.get(fn_name)
+    if target and target.parameters:
+        for pname, schema in target.parameters.items():
+            ctx = _param_context(prompt, fn_name, params, pname)
+            ids = llm.encode(ctx)[0].tolist()
+            params[pname] = _decode_param(
+                llm, vocab, schema, ctx, ids, bool_trie
+            )
+
+    return json.dumps(
+        {"prompt": prompt, "name": fn_name, "parameters": params}, indent=2
+    )
