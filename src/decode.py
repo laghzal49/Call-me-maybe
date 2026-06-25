@@ -198,27 +198,21 @@ def _build_param_context(
     param_name: str,
 ) -> str:
     """Format JSON prefix up to parameter currently being generated."""
-    param_context = (
+    current_state = {
+        "name": chosen_fn_name,
+        "parameters": extracted_params
+    }
+    serialized = json.dumps(current_state)
+    # Strip the trailing "}}" of the parameters dictionary
+    truncated = serialized[:-2]
+    # Match the prefix spacing style: { "name":
+    if truncated.startswith('{"name":'):
+        truncated = '{ "name":' + truncated[8:]
+    separator = ", " if extracted_params else ""
+    return (
         f"User: {prompt_text}\n"
-        f"JSON: {{ \"name\": \"{chosen_fn_name}\", \"parameters\": {{"
+        f"JSON: {truncated}{separator}\"{param_name}\": "
     )
-
-    # Append already extracted parameters to the context
-    param_list = []
-    for p_name, p_val in extracted_params.items():
-        if isinstance(p_val, bool):
-            val_str = "true" if p_val else "false"
-        elif isinstance(p_val, str):
-            val_str = f'"{p_val}"'
-        else:
-            val_str = str(p_val)
-        param_list.append(f'"{p_name}": {val_str}')
-
-    if param_list:
-        param_context += ", ".join(param_list) + ", "
-
-    param_context += f'"{param_name}": '
-    return param_context
 
 
 def _extract_source_string(

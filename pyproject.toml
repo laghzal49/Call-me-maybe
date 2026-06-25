@@ -26,8 +26,10 @@ exclude = [
     "^llm_sdk/",
     "^moulinette/",
     "^\\.venv/",
-    "^scratch_debug\\.py"
+    "^scratch_debug\\.py",
+    "^Call-me-maybe/"
 ]
+
 
 
 

@@ -6,4 +6,5 @@ exclude =
     moulinette,
     __pycache__,
     .mypy_cache,
-    scratch_debug.py
+    scratch_debug.py,
+    Call-me-maybe
