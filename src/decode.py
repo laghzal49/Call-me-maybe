@@ -215,72 +215,6 @@ def _build_param_context(
     )
 
 
-def _extract_source_string(
-    prompt_text: str, flat_quotes: List[str]
-) -> Optional[str]:
-    """Extract source string parameter from quotes or context."""
-    if " in " in prompt_text:
-        parts = prompt_text.split(" in ")
-        inner_quotes = re.findall(r"'(.*?)'|\"(.*?)\"", parts[-1])
-        if inner_quotes:
-            val = inner_quotes[0][0] or inner_quotes[0][1]
-            return str(val) if val else None
-    if flat_quotes:
-        val = max(flat_quotes, key=len)
-        return str(val) if val else None
-    return None
-
-
-def _extract_regex(prompt_text: str) -> Optional[str]:
-    """Extract regex pattern from prompt text."""
-    if "number" in prompt_text.lower() or "digit" in prompt_text.lower():
-        return "\\d+"
-    if "vowel" in prompt_text.lower():
-        return "[aeiouAEIOU]"
-    match = re.search(r"word '([^']+)'|word \"([^\"]+)\"", prompt_text)
-    if match:
-        return f"\\b{match.group(1) or match.group(2)}\\b"
-    match = re.search(
-        r"(?:substitute|replace|word) '([^']+)'|"
-        r"(?:substitute|replace|word) \"([^\"]+)\"",
-        prompt_text,
-        re.IGNORECASE,
-    )
-    if match:
-        return match.group(1) or match.group(2)
-    return None
-
-
-def _extract_replacement(prompt_text: str) -> Optional[str]:
-    """Extract replacement string parameter from prompt text."""
-    if "asterisk" in prompt_text.lower():
-        return "*"
-    match = re.search(
-        r"with '([^']+)'|with \"([^\"]+)\"|with ([a-zA-Z0-9]+)",
-        prompt_text,
-        re.IGNORECASE,
-    )
-    if match:
-        return match.group(1) or match.group(2) or match.group(3)
-    return None
-
-
-def _extract_regex_params(prompt_text: str) -> Optional[Dict[str, Any]]:
-    """Deterministic extractor for regex substitution parameters."""
-    quotes = re.findall(r"'(.*?)'|\"(.*?)\"", prompt_text)
-    flat_quotes = [q[0] or q[1] for q in quotes if q[0] or q[1]]
-    source_string = _extract_source_string(prompt_text, flat_quotes)
-    regex = _extract_regex(prompt_text)
-    replacement = _extract_replacement(prompt_text)
-    if source_string and regex and replacement:
-        return {
-            "source_string": source_string,
-            "regex": regex,
-            "replacement": replacement,
-        }
-    return None
-
-
 def _select_function(
     llm: Small_LLM_Model,
     prompt_text: str,
@@ -334,11 +268,6 @@ def _decode_parameters(
 ) -> Dict[str, Any]:
     """Decode parameter values sequentially for the chosen function."""
     extracted_params: Dict[str, Any] = {}
-    if chosen_fn_name == "fn_substitute_string_with_regex":
-        regex_params = _extract_regex_params(prompt_text)
-        if regex_params is not None:
-            return regex_params
-
     if target_fn and target_fn.parameters:
         for param_name, schema in target_fn.parameters.items():
             param_context = _build_param_context(
