@@ -3,14 +3,13 @@ import json
 import os
 import sys
 import time
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 from llm_sdk import Small_LLM_Model
-from src.parsing import (
-    parse_prompts, parse_functions, Promt, FunctionDefinition,
-)
+from src.decode import build_generation_context, generate_call
+from src.parsing import FunctionDefinition, Prompt, parse_functions
+from src.parsing import parse_prompts
 from src.vocab import Vocab
-from src.decode import generate_json
 
 
 def main() -> None:
@@ -31,32 +30,43 @@ def main() -> None:
     start = time.time()
 
     try:
-        prompts: List[Promt] = parse_prompts(args.input)
+        prompts: List[Prompt] = parse_prompts(args.input)
         functions: Dict[str, FunctionDefinition] = parse_functions(
             args.functions_definition
         )
-    except (FileNotFoundError, PermissionError, OSError, ValueError) as e:
-        print(e, file=sys.stderr)
+    except (FileNotFoundError, PermissionError, OSError, ValueError) as error:
+        print(error, file=sys.stderr)
         sys.exit(1)
 
-    llm = Small_LLM_Model()
-    vocab = Vocab(llm)
+    try:
+        llm = Small_LLM_Model()
+        vocab = Vocab(llm=llm)
+        context = build_generation_context(llm, functions)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(
+            f"Error: failed to initialize the model: {error}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     results: List[Dict[str, Any]] = []
     print(f"[*] Processing {len(prompts)} prompts sequentially...")
     for item in prompts:
         print(f" -> Generating for prompt: '{item.prompt}'")
-        output = generate_json(llm, vocab, item.prompt, functions)
         try:
-            results.append(json.loads(output))
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid JSON: {e}", file=sys.stderr)
+            results.append(generate_call(llm, vocab, item.prompt, context))
+        except ValueError as error:
+            print(
+                f"Error: failed to process prompt {item.prompt!r}: {error}",
+                file=sys.stderr,
+            )
 
     output_dir = os.path.dirname(args.output)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-    with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    with open(args.output, "w", encoding="utf-8") as file:
+        json.dump(results, file, indent=2)
+        file.write("\n")
 
     elapsed = (time.time() - start) / 60.0
     print(f"[+] Mandatory pipeline completed. Output saved to {args.output}")
