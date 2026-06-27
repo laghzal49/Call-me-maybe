@@ -1,7 +1,14 @@
 *This project has been created as part of the 42 curriculum by tlaghzal.*
 
 ## Description
-This project implements a reliable and accurate function calling engine for Large Language Models (LLMs) using **constrained decoding**. Given a small language model (Qwen3-0.6B) and a set of available pythonic function definitions, the engine translates natural language user prompts (e.g. *"What is the sum of 40 and 2?"*) into structurally valid, schema-compliant JSON representations specifying the function to call and its matching typed arguments:
+
+Call Me Maybe is a mandatory 42 project about function calling with a small LLM.
+The program receives natural-language prompts and a list of available function
+definitions, then writes a JSON array describing which function should be called
+and which typed parameters should be passed to it.
+
+Example output object:
+
 ```json
 {
   "prompt": "What is the sum of 40 and 2?",
@@ -10,79 +17,138 @@ This project implements a reliable and accurate function calling engine for Larg
 }
 ```
 
-By leveraging token-level constraint structures (Tries and vocabulary masks) rather than pure prompt engineering, this implementation guarantees **100% syntactically valid JSON** outputs that precisely adhere to specified schemas, making even small parameters models (0.5B - 0.6B) highly reliable in production agentic workflows.
+The important part is that the model is not asked to freely write JSON. The code
+uses constrained decoding so each generated token must keep the output inside
+the allowed function names and parameter value types.
 
 ## Instructions
 
 ### Installation
-You can install all dependencies and set up the local virtual environment using the Makefile:
+
+Install dependencies with:
+
 ```bash
 make install
 ```
-This rule will prepare the cache directories in `/goinfre`, link `.venv`, and synchronize dependencies using `uv`.
 
 ### Execution
-To run the function calling pipeline on the default test prompts and write the results:
+
+Run the default input files:
+
 ```bash
 make run
 ```
-You can also pass custom arguments by running:
+
+Equivalent direct command:
+
 ```bash
 uv run python -m src --functions_definition data/input/functions_definition.json --input data/input/function_calling_tests.json --output data/output/function_calling_results.json
 ```
 
+The output directory is generated at runtime and is ignored by git.
+
 ### Debugging
-To run the main entry point in debug mode using the built-in python debugger (`pdb`):
+
 ```bash
 make debug
 ```
 
 ### Linting
-To check the code format (flake8) and type correctness (mypy):
+
 ```bash
 make lint
 ```
 
 ### Cleaning Up
-To clean up temporary caches, mypy cache directories, and virtual environments:
+
 ```bash
 make clean
 ```
 
 ## Algorithm Explanation
 
-The core mechanism ensuring reliable JSON generation is **Constrained Decoding**. Instead of hoping the model generates valid JSON syntax, the decoder controls the token generation process at every single step:
+The decoder follows the subject's mandatory constrained-decoding idea:
 
-1. **Vocabulary Loading & Classification**: The model's `vocab.json` is loaded and analyzed. Tokens are categorized based on their representation (e.g., numeric tokens, string boundaries, quote characters).
-2. **Function Selection via Trie constraint**: We build a Trie mapping each valid function name string (prefixed with the initial JSON layout) to sequence of token IDs. The logits for the next token are masked to negative infinity for any token not present in the allowed transitions of the Trie. This guarantees the selected function is strictly one of the available functions.
-3. **Sequential Parameter Constraint**: Based on the schema definition of the selected function:
-   - **Booleans**: Constrained using a Boolean Trie containing only `true` and `false`.
-   - **Numbers / Integers**: Logits are masked to only permit valid numeric characters (`0-9`, `.`, `-`) or JSON parameter separators.
-   - **Strings**: Decoded by blocking unescaped quotation marks from terminating the string prematurely, allowing general text generation until a closing quote sequence is reached.
-4. **Deterministic Regex Extractor**: For complex string substitutions using regex (e.g., `fn_substitute_string_with_regex`), a deterministic helper extracts the target strings, regex patterns, and replacements directly from the prompt description to achieve 100% accuracy.
+1. The program loads and validates both input JSON files with pydantic models.
+2. The function definitions are inserted once into a token-id trie. During
+   generation, the LLM can only choose token ids that keep at least one valid
+   function name path alive.
+3. After the function name is selected, parameters are generated one by one using
+   the selected function schema.
+4. Boolean parameters are constrained to the trie values `true` and `false`.
+5. Number and integer parameters are constrained to tokens that keep a valid
+   numeric prefix. Stop tokens are only allowed after a complete number.
+6. String parameters are generated inside a JSON string context and stop on an
+   unescaped quote.
+7. The final file is written with `json.dump`, so the produced file is always
+   valid JSON and contains only the required keys: `prompt`, `name`, and
+   `parameters`.
+
+The function choice comes from the LLM logits under a token constraint. The code
+does not choose functions with keyword rules or hardcoded examples.
 
 ## Design Decisions
-- **Pydantic Validation**: All input configurations and parsed functions are validated using Pydantic schemas, raising clear validation errors on malformed JSON structures.
-- **Trie-based Constraint Representation**: Instead of evaluating complex state machines at runtime, a Trie constraint model checks next-allowed token sequences, making function/boolean matching extremely fast and robust.
-- **NumPy Argmax Optimization**: For large token filters (such as string decoding), NumPy array operations are used to perform fast vector masking on logits, preventing CPU overhead during long sequences.
+
+- Pydantic is used for all project classes that hold structured data.
+- The code is split by responsibility:
+  - `constraints.py` handles token ids, logits masking, tries, and reusable
+    generation context.
+  - `value_decoder.py` handles schema-specific parameter decoding.
+  - `decode.py` keeps only the high-level function-call flow.
+- The implementation stays inside the mandatory subject. It does not implement
+  bonus tokenizer recoding, model switching, batching, visualization, or nested
+  argument support.
+- The provided SDK is used through public methods only.
+- Errors from missing files, invalid JSON, model initialization, and generation
+  are caught and reported clearly.
+
+## File Organization
+
+Detailed file-by-file explanations, including each file's input, output, logic,
+and design reason, are in `docs/file_guide.md`.
 
 ## Performance Analysis
-- **Accuracy**: Achieves **100% accuracy** on function selection and argument type-conformance for the evaluated test suite.
-- **JSON Validity**: Guaranteed **100% valid JSON** output structure.
-- **Latency & Speed**: Runs efficiently under 1 minute for the entire test suite on standard CPU/GPU hardware (measured at **0.99 minutes** total execution time).
+
+- JSON validity: the output file is written by Python's JSON module.
+- Schema reliability: function names are constrained to declared functions, and
+  parameter values are constrained by declared primitive types.
+- Accuracy target: the subject asks for 90%+ function and argument accuracy. The
+  trie and type constraints improve reliability compared with prompt-only JSON
+  generation, while the final quality still depends on the small model logits.
+- Speed: prompts are processed sequentially, but shared trie constraints and
+  vocabulary token groups are built once and reused for every prompt.
 
 ## Challenges Faced & Solutions
-- **Namespace Package Clashes**: The `llm_sdk` module structure conflicted with the local directory name when type checking with `mypy`. This was resolved by configuring `mypy_path = "llm_sdk"` in `pyproject.toml` to explicitly resolve the nested package path.
-- **Returning Any Warning**: `json.loads` natively returns `Any` type, triggering type-hints warnings in static analysis. This was resolved by validating instances with `isinstance` before return.
+
+- Small models often produce invalid JSON when prompted normally. The solution is
+  to never ask the model to freely write the final object.
+- Tokenizers can split words and punctuation in surprising ways. The trie is
+  built with the SDK's own `encode` method so the allowed paths match the model
+  vocabulary.
+- Input files may be missing or malformed. Parsing code catches JSON errors and
+  validation errors and turns them into readable messages.
 
 ## Testing Strategy
-The implementation was tested by:
-1. Running static type checking via `mypy` and linting via `flake8`.
-2. Validating output format correctness on multiple function specifications (single vs multi-parameter, different type constraints).
-3. Confirming error resilience under malformed input JSON formats.
+
+Testing should include:
+
+1. `make lint`
+2. `make run`
+3. Check that `data/output/function_calling_results.json` exists.
+4. Validate that the output is a JSON array.
+5. Confirm each object contains exactly `prompt`, `name`, and `parameters`.
+6. Try malformed JSON and missing file paths to verify clear error messages.
+
+## File Guide
+
+See `docs/file_guide.md` for the complete explanation of every project file and
+folder.
 
 ## Resources
-- *Prompting vs Constrained Decoding: Structural Guidance for Language Models (2024)*
-- *Hugging Face Transformers Documentation on LogitsProcessor*
-- *Pydantic V2 Documentation on Model Schema Validation*
-- **AI Tool Usage**: AI was used to identify PEP 8 format issues, assist in refactoring type annotations, and structure the test workflow verification.
+
+- Pydantic documentation: https://docs.pydantic.dev/
+- Python argparse documentation: https://docs.python.org/3/library/argparse.html
+- Python json documentation: https://docs.python.org/3/library/json.html
+- Qwen3 model family: https://huggingface.co/Qwen
+- AI usage: AI was used to review the subject requirements, simplify the code
+  organization, improve wording in this README, and check for lint/type issues.
