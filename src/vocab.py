@@ -25,10 +25,11 @@ class Vocab:
         self.minus_id: int = self.text_to_id.get("-", -1)
         self.number_end_ids: Set[int] = self._encode_first(_NUMBER_END_CHARS)
         # every token whose text contains a double-quote. These are the
-        # candidates for CLOSING a string (e.g. '"', '",', '"}'), and are
-        # forbidden as plain string content.
+        # candidates for CLOSING a string (e.g. '"', '",', '"}'). We check
+        # startswith, not 'in', so that tokens like '\"' (backslash-quote,
+        # valid inside a JSON string / regex pattern) are allowed as content.
         self.string_quote_ids: Set[int] = {
-            i for t, i in self.text_to_id.items() if '"' in t
+            i for t, i in self.text_to_id.items() if t.startswith('"')
         }
 
     def _load_json(self) -> Dict[str, int]:

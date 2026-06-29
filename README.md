@@ -91,10 +91,13 @@ does not choose functions with keyword rules or hardcoded examples.
 
 - Pydantic is used for all project classes that hold structured data.
 - The code is split by responsibility:
-  - `constraints.py` handles token ids, logits masking, tries, and reusable
-    generation context.
-  - `value_decoder.py` handles schema-specific parameter decoding.
-  - `decode.py` keeps only the high-level function-call flow.
+  - `trie.py` — Trie data structure for fixed-choice constrained decoding.
+  - `vocab.py` — token-id sets for digits, signs, dots, and string closers.
+  - `masking.py` — `pick_allowed` / `pick_excluding` logit-masking primitives.
+  - `context.py` — `GenerationContext`, precomputed once per run.
+  - `state_machine.py` — the token-by-token decoding engine (NAME → PARAMS → DONE).
+  - `parsing.py` / `output.py` — I/O and schema validation.
+- No thin wrapper functions: every function does real work.
 - The implementation stays inside the mandatory subject. It does not implement
   bonus tokenizer recoding, model switching, batching, visualization, or nested
   argument support.
@@ -105,7 +108,7 @@ does not choose functions with keyword rules or hardcoded examples.
 ## File Organization
 
 Detailed file-by-file explanations, including each file's input, output, logic,
-and design reason, are in `docs/file_guide.md`.
+and design reason, are in the `docs/` folder (start with `docs/00-overview.md`).
 
 ## Performance Analysis
 
