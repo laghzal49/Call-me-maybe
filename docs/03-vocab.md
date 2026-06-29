@@ -23,9 +23,9 @@ tokens and their string representations ... to determine which tokens are valid.
   - `digit_ids: Set[int]` — tokens made only of digits.
   - `dot_id`, `minus_id: int` — the `.` and `-` tokens (`-1` if absent).
   - `number_end_ids: Set[int]` — tokens that legally end a number (`, } ] ` space, newline).
-  - `quote_id: int` — the closing `"` token.
-  - `string_forbidden_ids: Set[int]` — tokens that contain a `"` (except the clean
-    closing quote), which must never appear inside a string value.
+  - `string_quote_ids: Set[int]` — every token whose text contains a `"` (`"`,
+    `",`, `"}`, ...). These are the candidates for **closing** a string and are
+    forbidden as plain content.
 - **Methods:** `decode_token(id)`, `number_tokens(...)`, `integer_tokens(...)`.
 
 ## How it works
@@ -38,8 +38,8 @@ tokens and their string representations ... to determine which tokens are valid.
      tokens like `"42"` both keep a number valid and make generation faster).
    - `dot_id` / `minus_id` via direct lookup (`.` and `-` are plain ASCII, so they
      appear verbatim as vocab keys).
-   - `quote_id` = lookup of `"`; `string_forbidden_ids` = every id whose text
-     contains `"`, minus the clean `quote_id`.
+   - `string_quote_ids` = every id whose text contains `"`. The state machine uses
+     these both to forbid quotes inside content and to detect "close the string".
 3. `_encode_first([... ])` encodes each end character and keeps its first token id
    → `number_end_ids`. We use `encode` here (not vocab keys) because characters
    like space are stored byte-encoded in the raw vocab, and `encode` handles that.
@@ -54,6 +54,10 @@ tokens and their string representations ... to determine which tokens are valid.
 - **Why `started` instead of `has_digit` for the sign?** A bug-fix: with
   `has_digit` the sign stayed legal after a `-`, allowing `--5`. `started` allows
   the sign only as the very first character, so `--5`, `-.`, etc. are impossible.
+- **Why all quote-bearing tokens, not just the bare `"`?** The model usually
+  closes a value with a *merged* token like `",` or `"}`. If we only accepted the
+  lone `"`, the model could never emit its preferred closer and would ramble until
+  the length cap. Treating any quote-bearing token as a close fixed exactly that.
 - **Why exclude only quote tokens from strings (not backslashes/controls)?** We
   build a Python string and the output stage runs `json.dump`, which escapes
   everything. Allowing backslashes is essential — regex parameters like `\d+` must

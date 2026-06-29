@@ -68,11 +68,13 @@ only at the point where names actually diverge.)
 
 ### `decode_string()`
 
-Loops up to `MAX_STRING_TOKENS`. Each step uses `pick_excluding(logits,
-string_forbidden_ids)`: the best token that does **not** contain a quote. If the
-model picks the closing-quote token, the string is finished. Otherwise we decode
-the token to text, append it, and continue. The opening and closing quotes
-themselves are written by `do_params` (structure), not generated here.
+Loops up to `MAX_STRING_TOKENS`. Each step compares the **best content token**
+(`pick_excluding(logits, string_quote_ids)` — no quote) against the **best closing
+token** (`pick_allowed(logits, string_quote_ids)` — contains a quote). If closing
+wins, the string is finished; otherwise we append the content token and continue.
+This matters: the model usually closes with a merged token like `",` or `"}`, so
+accepting *any* quote-bearing token as a close is what stops it rambling. The
+opening and closing quotes themselves are written by `do_params`, not here.
 
 ### `decode_number(integer_only)`
 
