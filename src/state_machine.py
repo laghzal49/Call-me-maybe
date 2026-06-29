@@ -82,14 +82,22 @@ class StateMachine:
         return node.value or ""         # the word stored at the leaf
 
     def decode_string(self) -> str:
-        """Allow any non-quote token; stop when the model picks the close quote."""
+        """Emit content tokens; stop when the model prefers to close the string.
+
+        A string ends with a quote token (e.g. '"', '",', '"}'). We compare the
+        best plain-content token (no quote) against the best closing token (has a
+        quote): if closing wins, the value is finished. The closing quote itself
+        is written as structure by `do_params`, not here.
+        """
         text = ""
         for _ in range(MAX_STRING_TOKENS):
-            pick = pick_excluding(self.logits(), self.vocab.string_forbidden_ids)
-            if pick == self.vocab.quote_id:   # model wants to close the string
-                break
-            text += self.vocab.decode_token(pick)
-            self.ids.append(pick)
+            logits = self.logits()
+            best_content = pick_excluding(logits, self.vocab.string_quote_ids)
+            best_close = pick_allowed(logits, self.vocab.string_quote_ids)
+            if logits[best_close] >= logits[best_content]:
+                break   # model wants to end the string
+            text += self.vocab.decode_token(best_content)
+            self.ids.append(best_content)
         return text
 
     def decode_number(self, *, integer_only: bool) -> float:

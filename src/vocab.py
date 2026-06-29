@@ -24,11 +24,11 @@ class Vocab:
         self.dot_id: int = self.text_to_id.get(".", -1)
         self.minus_id: int = self.text_to_id.get("-", -1)
         self.number_end_ids: Set[int] = self._encode_first(_NUMBER_END_CHARS)
-        self.quote_id: int = self.text_to_id.get('"', -1)
-        # tokens we must NOT emit inside a string (they contain a quote),
-        # except the clean closing quote which we keep as the stop signal
-        self.string_forbidden_ids: Set[int] = {
-            i for t, i in self.text_to_id.items() if '"' in t and i != self.quote_id
+        # every token whose text contains a double-quote. These are the
+        # candidates for CLOSING a string (e.g. '"', '",', '"}'), and are
+        # forbidden as plain string content.
+        self.string_quote_ids: Set[int] = {
+            i for t, i in self.text_to_id.items() if '"' in t
         }
 
     def _load_json(self) -> Dict[str, int]:
