@@ -1,0 +1,619 @@
+"""Everything precomputed once per run and shared by every prompt."""
+
+from typing import Dict, List
+
+from pydantic import BaseModel, ConfigDict
+
+from llm_sdk import Small_LLM_Model
+
+from src.parsing import FunctionDefinition
+from src.trie import Trie
+
+# header the model sees before the JSON it must complete
+INSTRUCTION = (
+    "You convert the request into a function call.\n"
+    "Available functions:\n{block}\n"
+    "Request: {prompt}\n"
+)
+
+
+def build_functions_block(functions: Dict[str, FunctionDefinition]) -> str:
+    """Render the functions as short one-line signatures for the prompt."""
+    lines: List[str] = []
+    for fn in functions.values():
+        # e.g. "- fn_add_numbers(a: number, b: number): Add two numbers..."
+        params = ", ".join(f"{n}: {s.type}" for n, s in fn.parameters.items())
+        lines.append(f"- {fn.name}({params}): {fn.description}")
+    return "\n".join(lines)
+
+
+class GenerationContext(BaseModel):
+    """Precomputed inputs reused for every prompt (built once)."""
+
+    # Trie objects are not pydantic types, so allow arbitrary types.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    functions: Dict[str, FunctionDefinition]
+    functions_block: str    # text injected into every prompt
+    function_trie: Trie     # constrains the function-name choice
+    boolean_trie: Trie      # constrains booleans to true / false
+
+
+def build_generation_context(
+    llm: Small_LLM_Model,
+    functions: Dict[str, FunctionDefinition],
+) -> GenerationContext:
+    """Precompute the functions block and the name / boolean tries."""
+    return GenerationContext(
+        functions=functions,
+        functions_block=build_functions_block(functions),
+        function_trie=Trie.from_strings(llm, list(functions)),
+        boolean_trie=Trie.from_strings(llm, ["true", "false"]),
+    )
+"""Public entry for generating one function call from one prompt."""
+
+from llm_sdk import Small_LLM_Model
+
+from src.context import GenerationContext
+from src.state_machine import JsonObject, StateMachine
+from src.vocab import Vocab
+
+
+def generate_call(
+    llm: Small_LLM_Model,
+    vocab: Vocab,
+    ctx: GenerationContext,
+    prompt: str,
+) -> JsonObject:
+    """Run the state machine for one prompt and return its function call."""
+    return StateMachine(llm, vocab, ctx, prompt).run()
+"""Call Me Maybe — function-calling engine using constrained decoding.
+
+This package turns natural-language prompts into structured function calls
+(``{"prompt", "name", "parameters"}``) using a small local LLM whose token
+choices are constrained at generation time to guarantee valid, schema-compliant
+JSON.
+
+Module map
+----------
+- ``parsing``     : load + validate the two input JSON files (pydantic models).
+- ``vocab``       : map token ids to their decoded text and expose, for each
+                    value type, the set of token ids that are legal to emit.
+- ``constraints`` : the ``Trie`` data structure and the ``GenerationContext``
+                    that bundles everything precomputed once per run.
+- ``decoder``     : the constrained greedy decoding loop (pick function name,
+                    then decode each parameter according to its type).
+- ``output``      : validate generated results against the schema and write the
+                    final JSON output file.
+- ``__main__``    : command-line entry point and orchestration.
+"""
+"""Command-line entry point and orchestration.
+
+uv run python -m src [--functions_definition <file>] [--input <file>]
+                     [--output <file>]
+"""
+
+import argparse
+import sys
+import time
+from typing import List
+
+from llm_sdk import Small_LLM_Model
+
+from src.context import build_generation_context
+from src.decoder import JsonObject, generate_call
+from src.output import validate_result, write_results
+from src.parsing import parse_functions, parse_prompts
+from src.vocab import Vocab
+
+DEFAULT_FUNCTIONS = "data/input/functions_definition.json"
+DEFAULT_INPUT = "data/input/function_calling_tests.json"
+DEFAULT_OUTPUT = "data/output/function_calling_results.json"
+
+
+def parse_args() -> argparse.Namespace:
+    """Define and parse the three optional path arguments."""
+    parser = argparse.ArgumentParser(description="Call Me Maybe — function calling")
+    parser.add_argument("--functions_definition", default=DEFAULT_FUNCTIONS)
+    parser.add_argument("--input", default=DEFAULT_INPUT)
+    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    return parser.parse_args()
+
+
+def main() -> None:
+    """Run the pipeline: parse -> load model -> decode -> validate -> write."""
+    args = parse_args()
+    start = time.time()
+    try:
+        prompts = parse_prompts(args.input)
+        functions = parse_functions(args.functions_definition)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        llm = Small_LLM_Model()
+        vocab = Vocab(llm)
+        ctx = build_generation_context(llm, functions)
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f"Error: failed to initialize the model: {error}", file=sys.stderr)
+        sys.exit(1)
+    results: List[JsonObject] = []
+    print(f"[*] Processing {len(prompts)} prompts...")
+    for item in prompts:
+        try:
+            print(f"Prompts: {item}")
+            result = generate_call(llm, vocab, ctx, item.prompt)
+            validate_result(result, functions)  # final schema safety net
+            results.append(result)
+        except (ValueError, KeyError) as error:
+            print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
+
+    # 4. write the output file
+    try:
+        write_results(args.output, results)
+    except OSError as error:
+        print(f"Error: cannot write {args.output}: {error}", file=sys.stderr)
+        sys.exit(1)
+
+    elapsed = time.time() - start
+    print(f"[*] Done: {len(results)}/{len(prompts)} calls in {elapsed:.1f}s")
+
+
+if __name__ == "__main__":
+    main()
+"""Logit masking: choose one token id from the valid ones.
+
+Picking the max over a subset is the same as setting every other token's logit
+to negative infinity and then taking the argmax, which is exactly what the
+subject describes as constrained decoding.
+"""
+
+from typing import List, Set
+
+
+def pick_allowed(logits: List[float], allowed: Set[int]) -> int:
+    """Highest-logit token among `allowed` (mask by inclusion).
+
+    Used when the valid set is small: trie children, or numeric tokens.
+    """
+    return max(allowed, key=lambda i: logits[i])
+
+
+def pick_excluding(logits: List[float], forbidden: Set[int]) -> int:
+    """Highest-logit token that is not in `forbidden` (mask by exclusion).
+
+    Used for strings, where nearly every token is valid except a few (the
+    tokens that contain a double-quote).
+    """
+    best_id, best_val = -1, float("-inf")
+    for i, val in enumerate(logits):
+        if i in forbidden:
+            continue
+        if val > best_val:
+            best_id, best_val = i, val
+    return best_id
+"""Validate generated calls against the schema and write the JSON file."""
+
+import json
+import os
+from typing import Any, Dict, List
+
+from src.parsing import FunctionDefinition
+
+JsonObject = Dict[str, Any]
+
+
+def validate_result(
+    result: JsonObject,
+    functions: Dict[str, FunctionDefinition],
+) -> None:
+    """Raise ValueError if a result breaks the schema."""
+    # exactly the three required keys, nothing more
+    if set(result) != {"prompt", "name", "parameters"}:
+        raise ValueError(f"unexpected keys: {sorted(result)}")
+    name = result["name"]
+    # the chosen function must exist
+    if name not in functions:
+        raise ValueError(f"unknown function: {name}")
+    function = functions[name]
+    params = result["parameters"]
+    # the params must match the function's declared params exactly
+    if set(params) != set(function.parameters):
+        raise ValueError(f"{name}: parameter mismatch: {sorted(params)}")
+    # each value's python type must match its declared type
+    for key, schema in function.parameters.items():
+        value = params[key]
+        if schema.type == "string" and not isinstance(value, str):
+            raise ValueError(f"{name}.{key}: expected string")
+        if schema.type == "boolean" and not isinstance(value, bool):
+            raise ValueError(f"{name}.{key}: expected boolean")
+        # bool is a subclass of int, so reject it for numeric types
+        if schema.type in {"number", "integer"} and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            raise ValueError(f"{name}.{key}: expected {schema.type}")
+
+
+def write_results(path: str, results: List[JsonObject]) -> None:
+    """Write the results array as pretty JSON, creating the folder if needed."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    # context manager closes the file even on error
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(results, file, indent=2)
+        file.write("\n")
+import json
+from typing import Any, Dict, List, Literal
+
+from pydantic import BaseModel, ValidationError
+
+
+class TypeSchema(BaseModel):
+    """Schema describing the expected type of a parameter or return value."""
+
+    type: Literal["number", "integer", "string", "boolean"]
+    optional: bool = False
+
+
+class Prompt(BaseModel):
+    """A single natural-language prompt."""
+
+    prompt: str
+
+
+class FunctionDefinition(BaseModel):
+    """Definition of a callable function: name, args, return type."""
+
+    name: str
+    description: str
+    parameters: Dict[str, TypeSchema]
+    returns: TypeSchema
+
+
+def _load_json_array(path: str) -> List[Any]:
+    try:
+        with open(path, encoding="utf-8") as file:
+            data = json.load(file)
+    except FileNotFoundError as error:
+        raise ValueError(f"Error: file not found: {path}") from error
+    except OSError as error:
+        raise ValueError(f"Error: cannot read {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise ValueError(f"Error: invalid JSON in {path}: {error}") from error
+    if not isinstance(data, list):
+        raise ValueError(f"Error: {path} must contain a JSON array")
+    return data
+
+
+def parse_prompts(path: str) -> List[Prompt]:
+    """Load and validate prompts from a JSON file."""
+    entries = _load_json_array(path)
+    prompts: List[Prompt] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Error: prompt entry {index} is not an object")
+        try:
+            prompts.append(Prompt(**entry))
+        except ValidationError as error:
+            raise ValueError(f"Error: prompt entry {index} invalid: {error}") from error
+    return prompts
+
+
+def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
+    """Load and validate function definitions from a JSON file."""
+    entries = _load_json_array(path)
+    functions: Dict[str, FunctionDefinition] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Error: function entry {index} is not an object")
+        try:
+            function = FunctionDefinition(**entry)
+        except ValidationError as error:
+            raise ValueError(
+                f"Error: function entry {index} invalid: {error}"
+            ) from error
+        if function.name in functions:
+            raise ValueError(f"Error: duplicate function name: {function.name}")
+        functions[function.name] = function
+    if not functions:
+        raise ValueError("Error: at least one function definition is required")
+    return functions
+"""The state machine that builds one function call token by token.
+
+We keep ONE growing list of token ids (`self.ids`) and only append to it. The
+fixed JSON structure (braces, quotes, keys) is written directly; the model is
+asked only where it has a real choice (the name and the values), and there we
+mask the logits so only valid tokens can be picked.
+"""
+
+import json
+from enum import Enum, auto
+from typing import Any, Dict, List
+
+from llm_sdk import Small_LLM_Model
+
+from src.context import INSTRUCTION, GenerationContext
+from src.masking import pick_allowed, pick_excluding
+from src.parsing import TypeSchema
+from src.trie import TrieNode, encode_ids
+from src.vocab import Vocab
+
+JsonObject = Dict[str, Any]
+
+# hard caps so a misbehaving model can never loop forever
+MAX_NUMBER_TOKENS = 24
+MAX_STRING_TOKENS = 64
+
+
+class State(Enum):
+    """The phases the machine moves through."""
+
+    NAME = auto()      # choosing the function name
+    PARAMS = auto()    # filling each parameter value
+    DONE = auto()      # finished
+
+
+class StateMachine:
+    """Builds one function call by extending a single token sequence."""
+
+    def __init__(
+        self,
+        llm: Small_LLM_Model,
+        vocab: Vocab,
+        ctx: GenerationContext,
+        prompt: str,
+    ) -> None:
+        """Start the sequence at the prompt header + the JSON opening."""
+        self.llm = llm
+        self.vocab = vocab
+        self.ctx = ctx
+        self.state = State.NAME
+        # the call we will return at the end
+        self.result: JsonObject = {"prompt": prompt, "name": "", "parameters": {}}
+        # the single, append-only token sequence we keep feeding the model
+        header = INSTRUCTION.format(block=ctx.functions_block, prompt=prompt)
+        self.ids: List[int] = encode_ids(llm, header + '{"name": "')
+
+    # --- low-level helpers -------------------------------------------------
+
+    def emit(self, text: str) -> None:
+        """Append fixed structural text (we are not asking the model here)."""
+        self.ids += encode_ids(self.llm, text)
+
+    def logits(self) -> List[float]:
+        """Next-token logits for the current sequence."""
+        return self.llm.get_logits_from_input_ids(self.ids)
+
+    # --- value decoders (each appends only the chosen value tokens) --------
+
+    def walk_trie(self, root: TrieNode) -> str:
+        """Descend a trie; ask the model only where there is a real choice."""
+        node = root
+        while node.children:
+            if len(node.children) == 1:
+                # only one valid token -> forced, no need to run the model
+                (token_id, child), = node.children.items()
+            else:
+                # real choice: run the model and mask to the valid children
+                token_id = pick_allowed(self.logits(), set(node.children))
+                child = node.children[token_id]
+            self.ids.append(token_id)   # continue the same sequence
+            node = child
+        return node.value or ""         # the word stored at the leaf
+
+    def decode_string(self) -> str:
+        """Emit content tokens; stop when the model prefers to close the string.
+
+        A string ends with a quote token (e.g. '"', '",', '"}'). We compare the
+        best plain-content token (no quote) against the best closing token (has a
+        quote): if closing wins, the value is finished. The closing quote itself
+        is written as structure by `do_params`, not here.
+        """
+        text = ""
+        for _ in range(MAX_STRING_TOKENS):
+            logits = self.logits()
+            best_content = pick_excluding(logits, self.vocab.string_quote_ids)
+            best_close = pick_allowed(logits, self.vocab.string_quote_ids)
+            if logits[best_close] >= logits[best_content]:
+                break   # model wants to end the string
+            text += self.vocab.decode_token(best_content)
+            self.ids.append(best_content)
+        return text
+
+    def decode_number(self, *, integer_only: bool) -> float:
+        """Allow digits/dot/sign; stop when the model picks an end token."""
+        text = ""
+        has_digit = has_dot = False
+        for _ in range(MAX_NUMBER_TOKENS):
+            started = bool(text)   # has anything been emitted yet?
+            if integer_only:
+                allowed = self.vocab.integer_tokens(started=started)
+            else:
+                allowed = self.vocab.number_tokens(
+                    started=started, has_digit=has_digit, has_dot=has_dot
+                )
+            if has_digit:          # after a digit, the model may stop
+                allowed = allowed | self.vocab.number_end_ids
+            pick = pick_allowed(self.logits(), allowed)
+            if pick in self.vocab.number_end_ids:   # end token -> number done
+                break
+            piece = self.vocab.decode_token(pick)
+            text += piece
+            self.ids.append(pick)
+            if any(c.isdigit() for c in piece):
+                has_digit = True
+            if "." in piece:
+                has_dot = True
+        if not has_digit:          # no digits seen -> default 0
+            return 0
+        return int(text) if integer_only else float(text)
+
+    def decode_value(self, schema: TypeSchema) -> Any:
+        """Pick the decoder matching the parameter's declared type."""
+        if schema.type == "string":
+            return self.decode_string()
+        if schema.type == "boolean":
+            return self.walk_trie(self.ctx.boolean_trie.root) == "true"
+        return self.decode_number(integer_only=schema.type == "integer")
+
+    # --- phase handlers ----------------------------------------------------
+
+    def do_name(self) -> None:
+        """Choose the function name, then open the parameters object."""
+        name = self.walk_trie(self.ctx.function_trie.root)
+        # fall back to the first function if the walk found nothing
+        self.result["name"] = name or next(iter(self.ctx.functions))
+        self.emit('", "parameters": {')
+
+    def do_params(self) -> None:
+        """Fill every parameter value in order, then close the JSON."""
+        function = self.ctx.functions[self.result["name"]]
+        items = list(function.parameters.items())
+        for index, (key, schema) in enumerate(items):
+            self.emit(f"{json.dumps(key)}: ")    # e.g.  "a":
+            is_string = schema.type == "string"
+            if is_string:
+                self.emit('"')                    # open the string ourselves
+            value = self.decode_value(schema)
+            if is_string:
+                self.emit('"')                    # close it ourselves
+            self.result["parameters"][key] = value
+            if index < len(items) - 1:            # comma before the next value
+                self.emit(", ")
+        self.emit("}}")                           # close parameters + root
+
+    # --- driver ------------------------------------------------------------
+
+    def run(self) -> JsonObject:
+        """Step through the phases until done, then return the call."""
+        while self.state != State.DONE:
+            if self.state == State.NAME:
+                self.do_name()
+                self.state = State.PARAMS
+            else:                                 # State.PARAMS
+                self.do_params()
+                self.state = State.DONE
+        return self.result
+"""Token-id trie used for fixed-choice constraints (names, booleans)."""
+
+from typing import Dict, List, Optional
+
+from llm_sdk import Small_LLM_Model
+
+
+def encode_ids(llm: Small_LLM_Model, text: str) -> List[int]:
+    """Turn text into a flat list of token ids (encode returns a 2-D tensor)."""
+    ids: List[int] = llm.encode(text).tolist()[0]
+    return ids
+
+
+class TrieNode:
+    """One node of a token-id trie."""
+
+    def __init__(self) -> None:
+        # child token id -> next node
+        self.children: Dict[int, "TrieNode"] = {}
+        # the full word, set only at the node that ends a word (else None)
+        self.value: Optional[str] = None
+
+
+class Trie:
+    """A set of words stored as paths of token ids."""
+
+    def __init__(self) -> None:
+        self.root = TrieNode()
+
+    def insert(self, token_ids: List[int], value: str) -> None:
+        """Add one word, walking/creating one node per token id."""
+        node = self.root
+        for token_id in token_ids:
+            if token_id not in node.children:
+                node.children[token_id] = TrieNode()
+            node = node.children[token_id]
+        node.value = value   # remember the word at its final node
+
+    @classmethod
+    def from_strings(cls, llm: Small_LLM_Model, values: List[str]) -> "Trie":
+        """Build a trie from words by encoding each one to token ids."""
+        trie = cls()
+        for value in values:
+            trie.insert(encode_ids(llm, value), value)
+        return trie
+"""Token sets used to mask logits during decoding."""
+
+import json
+from typing import Dict, Set
+
+from llm_sdk import Small_LLM_Model
+
+_NUMBER_END_CHARS = [",", "}", "]", " ", "\n"]
+
+
+class Vocab:
+    """Token id <-> text map plus the masking sets for numbers/strings."""
+
+    def __init__(self, llm: Small_LLM_Model) -> None:
+        """Load the vocab and precompute every reusable token set once."""
+        self.llm: Small_LLM_Model = llm
+        self.text_to_id: Dict[str, int] = self._load_json()
+        self.id_to_text: Dict[int, str] = {i: t for t, i in self.text_to_id.items()}
+        self.digit_ids: Set[int] = {
+            i
+            for t, i in self.text_to_id.items()
+            if t and all(c in "0123456789" for c in t)
+        }
+        self.dot_id: int = self.text_to_id.get(".", -1)
+        self.minus_id: int = self.text_to_id.get("-", -1)
+        self.number_end_ids: Set[int] = self._encode_first(_NUMBER_END_CHARS)
+        # every token whose text contains a double-quote. These are the
+        # candidates for CLOSING a string (e.g. '"', '",', '"}'), and are
+        # forbidden as plain string content.
+        self.string_quote_ids: Set[int] = {
+            i for t, i in self.text_to_id.items() if '"' in t
+        }
+
+    def _load_json(self) -> Dict[str, int]:
+        """Load the vocab JSON file the SDK points us to."""
+        vocab_path: str = self.llm.get_path_to_vocab_file()
+        try:
+            with open(vocab_path, encoding="utf-8") as file:
+                data: Dict[str, int] = json.load(file)
+                return data
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"File Not Found: {vocab_path}") from error
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Error in JSON decode: {error}") from error
+
+    def _encode_first(self, chars: list[str]) -> Set[int]:
+        """Token id of the first token of each given character."""
+        ids: Set[int] = set()
+        for char in chars:
+            encoded = self.llm.encode(char).tolist()[0]  # 2-D -> first row
+            if encoded:
+                ids.add(encoded[0])
+        return ids
+
+    def decode_token(self, token_id: int) -> str:
+        """Decode a single token id back to text."""
+        text: str = self.llm.decode([token_id])
+        return text
+
+    def number_tokens(
+        self, *, started: bool, has_digit: bool, has_dot: bool
+    ) -> Set[int]:
+        """Digits, a sign only as the first char, and one dot only after a digit."""
+        allowed = set(self.digit_ids)
+        if not started and self.minus_id != -1:  # sign only at the very start
+            allowed.add(self.minus_id)
+        if has_digit and not has_dot and self.dot_id != -1:  # one dot, after a digit
+            allowed.add(self.dot_id)
+        return allowed
+
+    def integer_tokens(self, *, started: bool) -> Set[int]:
+        """Like number_tokens but never allows a decimal point."""
+        allowed = set(self.digit_ids)
+        if not started and self.minus_id != -1:  # sign only at the very start
+            allowed.add(self.minus_id)
+        return allowed
