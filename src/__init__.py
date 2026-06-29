@@ -7,14 +7,12 @@ JSON.
 
 Module map
 ----------
-- ``parsing``     : load + validate the two input JSON files (pydantic models).
-- ``vocab``       : map token ids to their decoded text and expose, for each
-                    value type, the set of token ids that are legal to emit.
-- ``constraints`` : the ``Trie`` data structure and the ``GenerationContext``
-                    that bundles everything precomputed once per run.
-- ``decoder``     : the constrained greedy decoding loop (pick function name,
-                    then decode each parameter according to its type).
-- ``output``      : validate generated results against the schema and write the
-                    final JSON output file.
-- ``__main__``    : command-line entry point and orchestration.
+- ``parsing``       : load + validate the two input JSON files (pydantic models).
+- ``trie``          : Trie data structure; encode_ids helper.
+- ``vocab``         : map token ids to text; expose per-type allowed token sets.
+- ``masking``       : pick_allowed / pick_excluding — logit masking primitives.
+- ``context``       : GenerationContext and build_generation_context (built once).
+- ``state_machine`` : StateMachine — the token-by-token constrained decoder.
+- ``output``        : validate generated results against the schema; write JSON.
+- ``__main__``      : command-line entry point and orchestration.
 """

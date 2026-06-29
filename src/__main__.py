@@ -12,9 +12,9 @@ from typing import List
 from llm_sdk import Small_LLM_Model
 
 from src.context import build_generation_context
-from src.decoder import JsonObject, generate_call
 from src.output import validate_result, write_results
 from src.parsing import parse_functions, parse_prompts
+from src.state_machine import JsonObject, StateMachine
 from src.vocab import Vocab
 
 DEFAULT_FUNCTIONS = "data/input/functions_definition.json"
@@ -51,16 +51,15 @@ def main() -> None:
         sys.exit(1)
     results: List[JsonObject] = []
     print(f"[*] Processing {len(prompts)} prompts...")
-    for item in prompts:
+    for i, item in enumerate(prompts, 1):
         try:
-            print(f"Prompts: {item}")
-            result = generate_call(llm, vocab, ctx, item.prompt)
-            validate_result(result, functions)  # final schema safety net
+            print(f"  [{i}/{len(prompts)}] {item.prompt!r}")
+            result = StateMachine(llm, vocab, ctx, item.prompt).run()
+            validate_result(result, functions)
             results.append(result)
         except (ValueError, KeyError) as error:
             print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
 
-    # 4. write the output file
     try:
         write_results(args.output, results)
     except OSError as error:
