@@ -8,6 +8,7 @@ class TypeSchema(BaseModel):
     """Schema describing the expected type of a parameter or return value."""
 
     type: Literal["number", "integer", "string", "boolean"]
+    optional: bool = False
 
 
 class Prompt(BaseModel):
@@ -26,10 +27,13 @@ class FunctionDefinition(BaseModel):
 
 
 def _load_json_array(path: str) -> List[Any]:
-    """Read a JSON file and ensure it's an array."""
     try:
         with open(path, encoding="utf-8") as file:
             data = json.load(file)
+    except FileNotFoundError as error:
+        raise ValueError(f"Error: file not found: {path}") from error
+    except OSError as error:
+        raise ValueError(f"Error: cannot read {path}: {error}") from error
     except json.JSONDecodeError as error:
         raise ValueError(f"Error: invalid JSON in {path}: {error}") from error
     if not isinstance(data, list):
@@ -47,9 +51,7 @@ def parse_prompts(path: str) -> List[Prompt]:
         try:
             prompts.append(Prompt(**entry))
         except ValidationError as error:
-            raise ValueError(
-                f"Error: prompt entry {index} invalid: {error}"
-            ) from error
+            raise ValueError(f"Error: prompt entry {index} invalid: {error}") from error
     return prompts
 
 
@@ -67,9 +69,7 @@ def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
                 f"Error: function entry {index} invalid: {error}"
             ) from error
         if function.name in functions:
-            raise ValueError(
-                f"Error: duplicate function name: {function.name}"
-            )
+            raise ValueError(f"Error: duplicate function name: {function.name}")
         functions[function.name] = function
     if not functions:
         raise ValueError("Error: at least one function definition is required")
