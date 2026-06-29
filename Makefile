@@ -5,7 +5,7 @@ VENV_DIR       = $(GOINFRE_USER)/call_venv
 HF_HOME_DIR    = $(GOINFRE_USER)/hf-cache
 CPU_INDEX      = https://download.pytorch.org/whl/cpu
 
-.PHONY: install run debug clean lint
+.PHONY: install run debug clean lint lint-strict
 
 install:
 	@echo "Creating storage directories in goinfre..."
@@ -45,3 +45,8 @@ lint:
 	@export UV_CACHE_DIR=$(CACHE_DIR); \
 	unset TMPDIR; \
 	uv run flake8 . && uv run mypy . --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
+
+lint-strict:
+	@export UV_CACHE_DIR=$(CACHE_DIR); \
+	unset TMPDIR; \
+	uv run flake8 . && uv run mypy . --strict
