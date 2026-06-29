@@ -133,8 +133,9 @@ CONSTRAINED DECODING — how a single step works
   ├────────────────┼────────────────────────────────────────────────────┤
   │ function name  │ children of current trie node                     │
   │ boolean value  │ children of current trie node ("true" / "false")  │
-  │ string content │ all tokens whose text does NOT start with "        │
-  │ string close   │ first token among those that DO start with "       │
+  │ string content │ all tokens whose text does NOT contain "           │
+  │ string close   │ best token among those that DO contain "           │
+  │                │ (prefix before " is salvaged into the string)      │
   │ integer digit  │ digit-only tokens; minus only at position 0        │
   │ number digit   │ digit tokens; minus at pos 0; one dot after digit  │
   │ number/int end │ end-tokens (, } ] space …) after at least 1 digit  │

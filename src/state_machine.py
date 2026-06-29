@@ -84,10 +84,14 @@ class StateMachine:
     def decode_string(self) -> str:
         """Emit content tokens; stop when the model prefers to close the string.
 
-        A string ends with a quote token (e.g. '"', '",', '"}'). We compare the
-        best plain-content token (no quote) against the best closing token (has a
-        quote): if closing wins, the value is finished. The closing quote itself
-        is written as structure by `do_params`, not here.
+        A string ends with a quote token (e.g. '"', '",', '"}').  We compare
+        the best plain-content token (no quote) against the best closing token
+        (contains a quote): if closing wins, the value is finished.
+
+        Some BPE tokens carry content before the quote (e.g. ')"' for a regex
+        that ends with a closing paren).  We salvage that prefix so the string
+        is not silently truncated.  The closing quote itself is written as
+        structure by `do_params`, not here.
         """
         text = ""
         for _ in range(MAX_STRING_TOKENS):
@@ -95,7 +99,15 @@ class StateMachine:
             best_content = pick_excluding(logits, self.vocab.string_quote_ids)
             best_close = pick_allowed(logits, self.vocab.string_quote_ids)
             if logits[best_close] >= logits[best_content]:
-                break   # model wants to end the string
+                # Salvage any content that appears before the '"' in the
+                # closing token (e.g. ')' from ')"' or '+' from '+"').
+                close_text = self.vocab.decode_token(best_close)
+                quote_pos = close_text.find('"')
+                if quote_pos > 0:
+                    prefix = close_text[:quote_pos]
+                    text += prefix
+                    self.emit(prefix)
+                break
             text += self.vocab.decode_token(best_content)
             self.ids.append(best_content)
         return text
