@@ -30,3 +30,8 @@ exclude = [
     "^moulinette/",
     "^present-me-maybe/"
 ]
+
+# The llm_sdk is provided third-party code; don't type-check it when imported.
+[[tool.mypy.overrides]]
+module = "llm_sdk.*"
+ignore_errors = true
