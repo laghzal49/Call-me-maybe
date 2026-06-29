@@ -1,4 +1,4 @@
-"""Validate generated calls against the schema and write the JSON file."""
+"""Validate generated calls against the schema and write the JSON output file."""
 
 import json
 import os
@@ -13,27 +13,38 @@ def validate_result(
     result: JsonObject,
     functions: Dict[str, FunctionDefinition],
 ) -> None:
-    """Raise ValueError if a result breaks the schema."""
-    # exactly the three required keys, nothing more
+    """Raise ValueError if a result breaks the required schema.
+
+    Checks (in order):
+      1. Exactly the three required keys: prompt, name, parameters.
+      2. The function name exists in the definitions.
+      3. The parameter keys match the function's declared parameters exactly.
+      4. Each value's Python type matches its declared JSON type.
+    """
+    # Exactly three keys — no extras, no missing.
     if set(result) != {"prompt", "name", "parameters"}:
         raise ValueError(f"unexpected keys: {sorted(result)}")
+
     name = result["name"]
-    # the chosen function must exist
     if name not in functions:
         raise ValueError(f"unknown function: {name}")
+
     function = functions[name]
     params = result["parameters"]
-    # the params must match the function's declared params exactly
+
+    # Parameter set must match exactly — no extras, no missing.
     if set(params) != set(function.parameters):
         raise ValueError(f"{name}: parameter mismatch: {sorted(params)}")
-    # each value's python type must match its declared type
+
+    # Check each value's Python type against its declared schema type.
     for key, schema in function.parameters.items():
         value = params[key]
         if schema.type == "string" and not isinstance(value, str):
             raise ValueError(f"{name}.{key}: expected string")
         if schema.type == "boolean" and not isinstance(value, bool):
             raise ValueError(f"{name}.{key}: expected boolean")
-        # bool is a subclass of int, so reject it for numeric types
+        # bool is a subclass of int in Python, so we must reject it explicitly
+        # for numeric types (True / False must not pass as 1 / 0).
         if schema.type in {"number", "integer"} and (
             isinstance(value, bool) or not isinstance(value, (int, float))
         ):
@@ -41,11 +52,15 @@ def validate_result(
 
 
 def write_results(path: str, results: List[JsonObject]) -> None:
-    """Write the results array as pretty JSON, creating the folder if needed."""
+    """Write the results list as pretty-printed JSON.
+
+    Creates the output directory if it does not exist.
+    Using json.dump (not manual string building) guarantees the file is
+    always valid JSON regardless of what values the model produced.
+    """
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    # context manager closes the file even on error
     with open(path, "w", encoding="utf-8") as file:
         json.dump(results, file, indent=2)
-        file.write("\n")
+        file.write("\n")   # trailing newline for POSIX compliance

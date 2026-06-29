@@ -1,3 +1,13 @@
+"""Load and validate the two input JSON files using pydantic models.
+
+Two files are parsed:
+  functions_definition.json — the functions the model can call.
+  function_calling_tests.json — the natural-language prompts to process.
+
+Pydantic raises ValidationError for any type or field mismatch, which we
+convert to a plain ValueError so the caller gets a clean error message.
+"""
+
 import json
 from typing import Any, Dict, List, Literal
 
@@ -5,28 +15,30 @@ from pydantic import BaseModel, ValidationError
 
 
 class TypeSchema(BaseModel):
-    """Schema describing the expected type of a parameter or return value."""
+    """The declared type of one parameter or return value."""
 
+    # Only these four primitive types are supported.
     type: Literal["number", "integer", "string", "boolean"]
     optional: bool = False
 
 
 class Prompt(BaseModel):
-    """A single natural-language prompt."""
+    """A single natural-language prompt from the test file."""
 
     prompt: str
 
 
 class FunctionDefinition(BaseModel):
-    """Definition of a callable function: name, args, return type."""
+    """One callable function: its name, parameter types, and return type."""
 
     name: str
     description: str
-    parameters: Dict[str, TypeSchema]
+    parameters: Dict[str, TypeSchema]   # key = parameter name
     returns: TypeSchema
 
 
 def _load_json_array(path: str) -> List[Any]:
+    """Read a JSON file and return its contents, which must be an array."""
     try:
         with open(path, encoding="utf-8") as file:
             data = json.load(file)
@@ -56,7 +68,10 @@ def parse_prompts(path: str) -> List[Prompt]:
 
 
 def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
-    """Load and validate function definitions from a JSON file."""
+    """Load and validate function definitions from a JSON file.
+
+    Returns a dict keyed by function name for O(1) lookup during generation.
+    """
     entries = _load_json_array(path)
     functions: Dict[str, FunctionDefinition] = {}
     for index, entry in enumerate(entries):
