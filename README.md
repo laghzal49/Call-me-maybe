@@ -67,20 +67,30 @@ make clean
 
 ## Algorithm Explanation
 
-The decoder follows the subject's mandatory constrained-decoding idea:
+The decoder follows the subject's mandatory constrained-decoding idea, split
+into a one-time **compile phase** and a per-prompt **decode phase**:
 
 1. The program loads and validates both input JSON files with pydantic models.
-2. The function definitions are inserted once into a token-id trie. During
-   generation, the LLM can only choose token ids that keep at least one valid
-   function name path alive.
-3. After the function name is selected, parameters are generated one by one using
+2. `grammar.py` compiles the schema **once**, before any prompt runs: every
+   distinct FSM state (start of a number, after a digit, inside a string, a
+   trie branch point) is turned into a boolean mask the width of the
+   vocabulary, and every literal, zero-entropy span of the output template
+   (`", "parameters": {`, `"key": `, `, `, `}}`, ...) is pre-encoded to token
+   ids. Function names are inserted once into a token-id trie; each branching
+   node gets its mask cached at compile time too.
+3. `decoder.py` only *walks* that compiled grammar. Literal spans are
+   appended with no model call. The model is called only where the output
+   genuinely branches: which function name, which digits, which string
+   characters, `true` vs `false` — and each such call indexes into a mask
+   that was already built, instead of rebuilding one.
+4. After the function name is selected, parameters are generated one by one using
    the selected function schema.
-4. Boolean parameters are constrained to the trie values `true` and `false`.
-5. Number and integer parameters are constrained to tokens that keep a valid
+5. Boolean parameters are constrained to the trie values `true` and `false`.
+6. Number and integer parameters are constrained to tokens that keep a valid
    numeric prefix. Stop tokens are only allowed after a complete number.
-6. String parameters are generated inside a JSON string context and stop on an
+7. String parameters are generated inside a JSON string context and stop on an
    unescaped quote.
-7. The final file is written with `json.dump`, so the produced file is always
+8. The final file is written with `json.dump`, so the produced file is always
    valid JSON and contains only the required keys: `prompt`, `name`, and
    `parameters`.
 
@@ -92,11 +102,14 @@ does not choose functions with keyword rules or hardcoded examples.
 - Pydantic is used for all project classes that hold structured data.
 - The code is split by responsibility:
   - `trie.py` — Trie data structure for fixed-choice constrained token paths.
-  - `decoder.py` — `Decoder` class: vocab loading, token sets, tries, and the
-    per-prompt constrained generation loop (all in one place).
+  - `grammar.py` — compile phase: builds every vocabulary mask and every
+    pre-encoded literal span once, before any prompt is processed.
+  - `decoder.py` — `Decoder` class: probes the model's real vocab width,
+    compiles the grammar, and runs the per-prompt constrained generation loop.
   - `parsing.py` / `output.py` — I/O and schema validation.
-- The `Decoder` is set up once per run (vocab, tries, functions block) and
-  `run(prompt)` is called for each prompt, sharing all precomputed state.
+- The `Decoder` is set up once per run (grammar, tries, functions block) and
+  `run(prompt)` is called for each prompt, sharing all precomputed state — no
+  mask or literal span is ever rebuilt mid-run.
 - The implementation stays inside the mandatory subject. It does not implement
   bonus tokenizer recoding, model switching, batching, visualization, or nested
   argument support.
@@ -111,7 +124,8 @@ src/
 ├── __main__.py   — CLI entry point and orchestration
 ├── parsing.py    — pydantic models + JSON input loading
 ├── trie.py       — token-id trie for constrained name/boolean generation
-├── decoder.py    — Decoder class: vocab, masking, tries, per-prompt run()
+├── grammar.py    — compile phase: vocab masks + pre-encoded literal spans
+├── decoder.py    — Decoder class: compiles the grammar, walks it per prompt
 └── output.py     — schema validation + JSON file writing
 ```
 
@@ -125,8 +139,11 @@ Detailed explanations of each file are in the `docs/` folder.
 - Accuracy target: the subject asks for 90%+ function and argument accuracy. The
   trie and type constraints improve reliability compared with prompt-only JSON
   generation, while the final quality still depends on the small model logits.
-- Speed: prompts are processed sequentially, but shared trie constraints and
-  vocabulary token groups are built once and reused for every prompt.
+- Speed: prompts are processed sequentially, but the grammar (vocab masks,
+  trie constraints, literal spans) is compiled exactly once and reused for
+  every prompt. Each model call is a full forward pass with no KV cache, so
+  the decode loop only ever calls the model where the output genuinely
+  branches — never on forced structural tokens.
 
 ## Challenges Faced & Solutions
 

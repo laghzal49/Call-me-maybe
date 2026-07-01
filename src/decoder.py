@@ -1,19 +1,23 @@
 """Constrained token-by-token decoder for function-call JSON generation.
 
-At every step the LLM produces logits over the full vocabulary. We set every
-invalid token to -inf and take argmax — that is the entire masking idea.
+The compile phase (src/grammar.py) has already turned the schema into
+vocabulary masks, trie branch masks, and pre-encoded literal spans. This
+file only walks that compiled Grammar: literal spans are appended for free
+(no model call), and at every genuine choice — which name, which digits,
+which string chars, true vs false — we ask the model for logits once and
+pick from a mask that already exists.
 """
 
-import json
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
 import numpy as np
 import numpy.typing as npt
 
 from llm_sdk import Small_LLM_Model
 
+from src.grammar import Grammar, Mask, compile_grammar
 from src.parsing import FunctionDefinition
-from src.trie import Trie, TrieNode, encode_ids
+from src.trie import TrieNode, encode_ids
 
 JsonObject = Dict[str, Any]
 Logits = npt.NDArray[np.float64]
@@ -35,8 +39,9 @@ _MAX_NUMBER = 24
 class Decoder:
     """Set up once per run; call run(prompt) for each prompt.
 
-    Everything that can be precomputed (vocab sets, tries, functions block)
-    is built in __init__ and reused for every prompt — no repeated work.
+    The compile phase (Grammar) builds every mask and literal span up
+    front, in __init__. run() never repeats that work — it only walks the
+    compiled structure.
     """
 
     def __init__(
@@ -44,60 +49,20 @@ class Decoder:
         llm: Small_LLM_Model,
         functions: Dict[str, FunctionDefinition],
     ) -> None:
-        """Load vocab, build tries, precompute the functions description block."""
+        """Probe the model's real vocab width, then compile the grammar."""
         self.llm = llm
         self.functions = functions
         self.ids: List[int] = []  # the growing token sequence, reset each run()
 
-        # The vocabulary JSON maps token text → token id.
-        # We need it to classify which ids are digits, dots, quotes, etc.
-        try:
-            with open(llm.get_path_to_vocab_file(), encoding="utf-8") as f:
-                vocab: Dict[str, int] = json.load(f)
-        except FileNotFoundError as e:
-            raise OSError(f"Vocab file not found: {e}") from e
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid vocab JSON: {e}") from e
+        # The tokenizer's vocab file can under-count the model's actual
+        # logits width (added special tokens usually aren't listed in it),
+        # so masks are sized from one real forward pass instead of a guess.
+        # This is the only model call in __init__ — it happens once per run,
+        # never once per prompt.
+        probe_ids = encode_ids(llm, "0")
+        vocab_size = len(llm.get_logits_from_input_ids(probe_ids))
 
-        # Tokens whose entire text is digits: "0", "1", ..., "9", "42", ...
-        # Multi-digit tokens like "42" are valid — they still only contain digits.
-        self._digits: Set[int] = {
-            i for t, i in vocab.items() if t and all(c.isdigit() for c in t)
-        }
-
-        # -1 means "not in this vocab" — safe because valid ids are >= 0.
-        self._dot: int = vocab.get(".", -1)
-        self._minus: int = vocab.get("-", -1)
-
-        # End-of-number tokens: the first token id produced when encoding each
-        # character. We only need the FIRST token because these are all single
-        # ASCII characters, which tokenise to exactly one token each.
-        self._end_ids: Set[int] = {
-            encode_ids(llm, c)[0] for c in (",", "}", "]", " ", "\n")
-        }
-
-        # Any token whose text CONTAINS a double-quote can close a string.
-        # BPE can bundle content + closing quote into one token (e.g. 'world"'),
-        # so we match on containment, not equality.
-        self._quote_ids: Set[int] = {i for t, i in vocab.items() if '"' in t}
-
-        # Build the function-name trie once.  During generation, the model can
-        # only pick token ids that keep at least one valid function name alive.
-        self._fn_trie = Trie.from_strings(llm, list(functions))
-
-        # Same idea for booleans — constrain to "true" or "false".
-        self._bool_trie = Trie.from_strings(llm, ["true", "false"])
-
-        # One-line description of each function, injected into every prompt so
-        # the model has the context it needs to pick the right function.
-        self._block = "\n".join(
-            "- {}({}): {}".format(
-                fn.name,
-                ", ".join(f"{n}: {s.type}" for n, s in fn.parameters.items()),
-                fn.description,
-            )
-            for fn in functions.values()
-        )
+        self.grammar: Grammar = compile_grammar(llm, functions, vocab_size)
 
     # ── core primitives ───────────────────────────────────────────────────────
 
@@ -105,30 +70,29 @@ class Decoder:
         """Ask the LLM for next-token logits given the current sequence."""
         return np.array(self.llm.get_logits_from_input_ids(self.ids), dtype=np.float64)
 
-    def _pick(self, lg: Logits, allowed: Set[int]) -> int:
-        """Constrained argmax: set every token outside `allowed` to -inf, return argmax.
+    def _pick(self, lg: Logits, mask: Mask) -> int:
+        """Constrained argmax over a precomputed boolean mask.
 
         This IS constrained decoding.  The model still runs over the full
-        vocabulary; we just ignore every token we don't want.
+        vocabulary; the mask (built once at compile time) just tells argmax
+        which tokens to ignore.
         """
-        masked = np.full(len(lg), -np.inf)
-        idx = list(allowed)
-        masked[idx] = lg[idx]       # copy logits only for the valid tokens
-        return int(np.argmax(masked))
+        return int(np.argmax(np.where(mask, lg, -np.inf)))
 
-    def _emit(self, text: str) -> None:
-        """Append forced structural tokens to the sequence without calling the model.
+    def _emit(self, ids: List[int]) -> None:
+        """Append a pre-encoded literal span without calling the model.
 
-        Positions where there is only one valid token (the opening '{', a key
-        name, the separator ', ', etc.) don't need the model — we just write them.
+        Positions where there is only one valid token (the opening '{', a
+        key name, the separator ', ', etc.) were already encoded once by
+        the compile phase — we just extend the sequence.
         """
-        self.ids += encode_ids(self.llm, text)
+        self.ids += ids
 
     def _walk(self, root: TrieNode) -> str:
         """Descend a trie one token at a time; call the model only at branch points.
 
         Forced step  (1 child)  — only one valid next token; skip the model.
-        Branching step (>1 child) — real choice; run _pick over the children.
+        Branching step (>1 child) — real choice; pick from the cached mask.
 
         This handles multi-token words (e.g. "fn_add_numbers" is several tokens)
         while keeping model calls to the minimum needed.
@@ -140,7 +104,8 @@ class Decoder:
                 (tid, child), = node.children.items()
             else:
                 # Real choice: the model's logits decide which branch to take.
-                tid = self._pick(self._logits(), set(node.children))
+                assert node.mask is not None  # set by the compile phase
+                tid = self._pick(self._logits(), node.mask)
                 child = node.children[tid]
             self.ids.append(tid)
             node = child
@@ -162,16 +127,13 @@ class Decoder:
         that wins, we salvage the text before the quote so nothing is lost.
         """
         text = ""
+        g = self.grammar
         for _ in range(_MAX_STRING):
             lg = self._logits()
 
-            # Pick the best closing-quote token before we modify lg.
-            close = self._pick(lg, self._quote_ids)
-            close_val = float(lg[close])   # must save now — we mask in-place below
-
-            # Set every quote token to -inf so argmax finds the best content token.
-            lg[list(self._quote_ids)] = -np.inf
-            best = int(np.argmax(lg))
+            close = self._pick(lg, g.quote_mask)
+            close_val = float(lg[close])
+            best = self._pick(lg, g.content_mask)
 
             if close_val >= float(lg[best]):
                 # Quote token won — the model is done with the string.
@@ -181,7 +143,7 @@ class Decoder:
                 q = pre.find('"')
                 if q > 0:
                     text += pre[:q]
-                    self._emit(pre[:q])
+                    self._emit(encode_ids(self.llm, pre[:q]))
                 break
 
             text += self.llm.decode([best])
@@ -191,28 +153,32 @@ class Decoder:
     def _number(self, *, integer_only: bool) -> float:
         """Decode a number; stop when the model picks an end token.
 
-        The allowed set grows as the number is built:
-          always          : digit tokens
-          at start        : + minus (sign only valid at position 0)
-          after a digit   : + end tokens (the model may stop here)
+        The FSM has exactly four states, each with a mask built once at
+        compile time:
+          start           : digits + minus (sign only valid at position 0)
+          after '-' only  : digits only (no second sign, nothing to stop yet)
           after a digit,
-          if not integer  : + dot (only once, never after the dot itself)
+          float, no dot   : digits + dot + end tokens
+          after a digit,
+          dot used / int  : digits + end tokens (no more dots ever)
 
         The end token is NOT appended — the caller (_emit) writes the separator.
         """
         text, has_digit, has_dot = "", False, False
+        g = self.grammar
         for _ in range(_MAX_NUMBER):
-            allowed: Set[int] = set(self._digits)
-            if not text and self._minus != -1:
-                allowed.add(self._minus)                 # sign only at start
-            if not integer_only and has_digit and not has_dot and self._dot != -1:
-                allowed.add(self._dot)                   # one dot, after a digit
-            if has_digit:
-                allowed |= self._end_ids                 # may stop after a digit
+            if not text:
+                mask = g.num_start_mask
+            elif not has_digit:
+                mask = g.digit_mask
+            elif not integer_only and not has_dot:
+                mask = g.num_pre_dot_mask
+            else:
+                mask = g.num_post_mask
 
-            tok = self._pick(self._logits(), allowed)
-            if tok in self._end_ids:
-                break                                    # end token → number done
+            tok = self._pick(self._logits(), mask)
+            if has_digit and g.end_mask[tok]:
+                break  # end token → number done
 
             piece = self.llm.decode([tok])
             text += piece
@@ -234,31 +200,32 @@ class Decoder:
         Output shape:
           {"name": "<fn>", "parameters": {"key": <value>, ...}}
         """
-        header = _INSTRUCTION.format(block=self._block, prompt=prompt)
+        g = self.grammar
+        header = _INSTRUCTION.format(block=g.block, prompt=prompt)
         # Start the sequence with the full prompt + the opening of the JSON.
         # The model's next token must continue the function name.
         self.ids = encode_ids(self.llm, header + '{"name": "')
 
         # Let the model pick the function name, constrained to the trie.
-        name = self._walk(self._fn_trie.root) or next(iter(self.functions))
-        self._emit('", "parameters": {')   # structural tokens written by code
+        name = self._walk(g.fn_trie.root) or next(iter(self.functions))
+        self._emit(g.head_ids)  # structural tokens, pre-encoded at compile time
 
         fn = self.functions[name]
         items = list(fn.parameters.items())
+        prefixes = g.param_prefix[name]
         params: Dict[str, Any] = {}
         for idx, (key, schema) in enumerate(items):
-            # json.dumps(key) adds the surrounding quotes and escapes if needed.
-            self._emit(f"{json.dumps(key)}: ")
+            self._emit(prefixes[idx])             # '"key": ', pre-encoded
             if schema.type == "string":
-                self._emit('"')                      # opening quote written by code
+                self._emit(g.quote_ids)                  # opening quote
                 params[key] = self._string()
-                self._emit('"')                      # closing quote written by code
+                self._emit(g.quote_ids)                  # closing quote
             elif schema.type == "boolean":
-                params[key] = self._walk(self._bool_trie.root) == "true"
+                params[key] = self._walk(g.bool_trie.root) == "true"
             else:
                 params[key] = self._number(integer_only=schema.type == "integer")
             if idx < len(items) - 1:
-                self._emit(", ")                     # separator between params
-        self._emit("}}")                             # close parameters + root object
+                self._emit(g.sep_ids)              # separator between params
+        self._emit(g.tail_ids)                     # close parameters + root object
 
         return {"prompt": prompt, "name": name, "parameters": params}
