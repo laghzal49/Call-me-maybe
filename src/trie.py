@@ -10,12 +10,21 @@ Why a trie and not a plain list?
 
 Forced vs branching steps:
   1 child  → only one valid next token; skip the model (no logit call needed).
-  >1 child → real choice; call the model and constrain to node.children.
+  >1 child → real choice; call the model and constrain to node.mask.
+
+node.mask is filled in by the compile phase (src/grammar.py): a boolean
+vocabulary-wide array with node.children.keys() set to True, built once so
+the decode loop never has to turn node.children back into a mask itself.
 """
 
 from typing import Dict, List, Optional
 
+import numpy as np
+import numpy.typing as npt
+
 from llm_sdk import Small_LLM_Model
+
+Mask = npt.NDArray[np.bool_]
 
 
 def encode_ids(llm: Small_LLM_Model, text: str) -> List[int]:
@@ -36,6 +45,9 @@ class TrieNode:
         self.children: Dict[int, "TrieNode"] = {}
         # Set only at the node that ENDS a word; None everywhere else.
         self.value: Optional[str] = None
+        # Boolean vocab-wide mask over node.children.keys(); only set on
+        # branching nodes (>1 child), filled in once by the compile phase.
+        self.mask: Optional[Mask] = None
 
 
 class Trie:
