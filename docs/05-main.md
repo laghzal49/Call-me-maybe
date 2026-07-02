@@ -1,4 +1,4 @@
-# 09 — `src/__main__.py`
+# 05 — `src/__main__.py`
 
 ## Role
 
@@ -24,21 +24,37 @@ exit cleanly** so the program never crashes with a raw traceback.
 
 ## How it works
 
+```mermaid
+flowchart TD
+    A["parse_args()"] --> B["1. parse_prompts + parse_functions"]
+    B -->|ValueError| X1["print → exit 1"]
+    B --> C["2. Decoder(Small_LLM_Model(), functions)"]
+    C -->|OSError / ValueError / RuntimeError| X2["print → exit 1"]
+    C --> D["3. for each prompt:<br/>decoder.run → validate_result → append"]
+    D -->|ValueError / KeyError on one prompt| SKIP["print, skip, continue"]
+    SKIP --> D
+    D --> E["4. write_results"]
+    E -->|OSError| X3["print → exit 1"]
+    E --> F["summary: N/M prompts in Xs"]
+```
+
 `parse_args()` defines the three flags with `argparse`.
 
 `main()` runs four guarded steps:
 
 1. **Parse inputs** — `parse_prompts` + `parse_functions`. On `ValueError`, print
    it and `sys.exit(1)`.
-2. **Load model & context** — `Small_LLM_Model()`, `Vocab(llm)`,
-   `build_generation_context(...)`. On `OSError`/`ValueError`/`RuntimeError`, print
-   a clear message and exit.
-3. **Generate per prompt** — for each prompt: `generate_call`, then
+2. **Load model & decoder** — `Decoder(Small_LLM_Model(), functions)` builds the
+   vocab token sets, tries, and functions block once. On
+   `OSError`/`ValueError`/`RuntimeError`, print a clear message and exit.
+3. **Generate per prompt** — for each prompt: `decoder.run(prompt)`, then
    `validate_result`, then append. A `ValueError`/`KeyError` on one prompt is
    printed and **skipped**, so the batch continues.
 4. **Write output** — `write_results`. On `OSError`, print and exit.
 
 Finally it prints a summary: how many calls were produced and the elapsed time.
+A `KeyboardInterrupt` at any point is caught at the very bottom so Ctrl-C exits
+without a traceback.
 
 ## Why this design
 
@@ -65,3 +81,4 @@ Finally it prints a summary: how many calls were produced and the elapsed time.
 - Model fails to load (e.g. offline) → exit at step 2.
 - One prompt fails → logged and skipped; others still produce output.
 - Output path not writable → exit at step 4.
+- Ctrl-C → clean message, no traceback.

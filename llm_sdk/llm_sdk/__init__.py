@@ -85,6 +85,10 @@ class Small_LLM_Model:
             output = self._model(input_ids=input_tensor)
         return [float(x) for x in output.logits[0, -1].tolist()]
 
+    def get_vocab(self) -> dict[str, int]:
+        """Return the token -> id vocab already held in memory (no download)."""
+        return self._tokenizer.get_vocab()
+
     def get_path_to_vocab_file(self) -> str:
         """Return the local path to the tokenizer vocabulary file."""
         vocab_file_name = self._tokenizer.vocab_files_names.get(

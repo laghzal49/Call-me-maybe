@@ -21,6 +21,38 @@ The important part is that the model is not asked to freely write JSON. The code
 uses constrained decoding so each generated token must keep the output inside
 the allowed function names and parameter value types.
 
+## How It Works
+
+```mermaid
+flowchart LR
+    FD[functions_definition.json] --> P[parsing.py]
+    TI[function_calling_tests.json] --> P
+    P --> D["Decoder setup (once)<br/>vocab token sets · tries ·<br/>functions text block"]
+    D --> R["Decoder.run(prompt)<br/>trie-constrained name +<br/>type-constrained values"]
+    R --> V["output.py<br/>strict pydantic validation"]
+    V --> O[function_calling_results.json]
+```
+
+At each generation step the model produces logits for every token in the
+vocabulary; the decoder sets every invalid token to negative infinity and takes
+the argmax of what remains. JSON structure (braces, quotes, keys, commas) is
+never generated — it is written directly, and the model is only consulted where
+there is a real choice:
+
+```mermaid
+flowchart LR
+    L["LLM logits"] --> M["mask invalid<br/>tokens to −∞"] --> A[argmax] --> T[token]
+    T -->|append & repeat| L
+```
+
+- **Function name** — constrained to a trie built from the declared function
+  names; the model is only called where names diverge.
+- **Boolean** — constrained to a trie of `true` / `false`.
+- **Integer / number** — digits, an optional leading minus, at most one dot;
+  stopping is itself a constrained choice of an end token.
+- **String** — any token without a quote is content; generation stops when a
+  quote-bearing token beats the best content token.
+
 ## Instructions
 
 ### Installation
@@ -129,8 +161,6 @@ src/
 └── output.py     — schema validation + JSON file writing
 ```
 
-Detailed explanations of each file are in the `docs/` folder.
-
 ## Performance Analysis
 
 - JSON validity: the output file is written by Python's JSON module.
@@ -165,11 +195,6 @@ Testing should include:
 4. Validate that the output is a JSON array.
 5. Confirm each object contains exactly `prompt`, `name`, and `parameters`.
 6. Try malformed JSON and missing file paths to verify clear error messages.
-
-## File Guide
-
-See `docs/file_guide.md` for the complete explanation of every project file and
-folder.
 
 ## Resources
 

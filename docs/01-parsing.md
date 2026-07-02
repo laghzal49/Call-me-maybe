@@ -39,20 +39,19 @@ Three pydantic models define the contract:
 - `FunctionDefinition` — `name`, `description`, `parameters: Dict[str, TypeSchema]`,
   `returns: TypeSchema`.
 
-`_load_json_array(path)` is the shared loader:
+All the JSON work is delegated to pydantic itself — no manual `json.loads` or
+per-entry type checks:
 
-1. Open with a context manager (auto-closes the file).
-2. Catch `FileNotFoundError`, `OSError`, `JSONDecodeError` and re-raise as a
-   `ValueError` with a readable message.
-3. Check the top level is a `list`; otherwise raise.
+- `_read_text(path)` reads the file inside a context manager and converts
+  `FileNotFoundError` / `OSError` into a readable `ValueError`.
+- `parse_prompts` feeds the raw text to a `TypeAdapter(List[Prompt])`, which
+  validates JSON syntax, the top-level array shape, and every entry in one call.
+- `parse_functions` uses a `RootModel[List[FunctionDefinition]]` whose
+  `model_validator` additionally rejects **duplicate names** and requires **at
+  least one** function; the result is returned as a dict keyed by name.
 
-`parse_prompts` / `parse_functions` then validate each item:
-
-- Each entry must be a dict, else "entry N is not an object".
-- Build the pydantic model; a `ValidationError` becomes a `ValueError` naming the
-  bad entry.
-- `parse_functions` additionally rejects **duplicate names** and requires **at
-  least one** function.
+Any `ValidationError` is re-raised as a `ValueError` naming the file, so the
+caller gets one clean message with pydantic's per-entry details inside.
 
 ## Why this design
 
@@ -66,11 +65,11 @@ Three pydantic models define the contract:
 ## How to reimplement
 
 1. Define the three pydantic models exactly as above.
-2. Write one helper that reads a file inside `try/except`, parses JSON, and
-   asserts the root is a list.
-3. Write two functions that loop over the list, validate each item, and collect
-   results (a list for prompts, a dict keyed by name for functions).
-4. Add the duplicate-name and non-empty checks for functions.
+2. Write one helper that reads a file inside `try/except` and turns I/O errors
+   into `ValueError`.
+3. Validate prompts with `TypeAdapter(List[Prompt]).validate_json(raw)`.
+4. Wrap the function list in a `RootModel` with a `model_validator` that adds
+   the duplicate-name and non-empty checks; return a dict keyed by name.
 
 ## Edge cases
 

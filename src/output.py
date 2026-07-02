@@ -1,66 +1,72 @@
-"""Validate generated calls against the schema and write the JSON output file."""
+"""Validate each generated call against its function schema, then write JSON.
+
+Constrained decoding should already produce valid results; this is the final
+safety net required by the subject (V.4.2): exact keys, a known function name,
+exactly the declared parameters, and matching value types.
+"""
 
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.parsing import FunctionDefinition
 
 JsonObject = Dict[str, Any]
+
+_PYTHON_TYPES: Dict[str, Tuple[type, ...]] = {
+    "string": (str,),
+    "boolean": (bool,),
+    "integer": (int, float),
+    "number": (int, float),
+}
+
+
+class Result(BaseModel):
+    """The required output shape: exactly prompt, name, and parameters."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str
+    name: str
+    parameters: Dict[str, Any]
 
 
 def validate_result(
     result: JsonObject,
     functions: Dict[str, FunctionDefinition],
 ) -> None:
-    """Raise ValueError if a result breaks the required schema.
+    """Raise ValueError if a result breaks the required schema."""
+    try:
+        checked = Result.model_validate(result)
+    except ValidationError as error:
+        raise ValueError(str(error)) from error
 
-    Checks (in order):
-      1. Exactly the three required keys: prompt, name, parameters.
-      2. The function name exists in the definitions.
-      3. The parameter keys match the function's declared parameters exactly.
-      4. Each value's Python type matches its declared JSON type.
-    """
-    # Exactly three keys — no extras, no missing.
-    if set(result) != {"prompt", "name", "parameters"}:
-        raise ValueError(f"unexpected keys: {sorted(result)}")
+    function = functions.get(checked.name)
+    if function is None:
+        raise ValueError(f"unknown function name: {checked.name}")
 
-    name = result["name"]
-    if name not in functions:
-        raise ValueError(f"unknown function: {name}")
+    if set(checked.parameters) != set(function.parameters):
+        raise ValueError(
+            f"{checked.name}: expected parameters "
+            f"{sorted(function.parameters)}, got {sorted(checked.parameters)}"
+        )
 
-    function = functions[name]
-    params = result["parameters"]
-
-    # Parameter set must match exactly — no extras, no missing.
-    if set(params) != set(function.parameters):
-        raise ValueError(f"{name}: parameter mismatch: {sorted(params)}")
-
-    # Check each value's Python type against its declared schema type.
     for key, schema in function.parameters.items():
-        value = params[key]
-        if schema.type == "string" and not isinstance(value, str):
-            raise ValueError(f"{name}.{key}: expected string")
-        if schema.type == "boolean" and not isinstance(value, bool):
-            raise ValueError(f"{name}.{key}: expected boolean")
-        # bool is a subclass of int in Python, so we must reject it explicitly
-        # for numeric types (True / False must not pass as 1 / 0).
-        if schema.type in {"number", "integer"} and (
-            isinstance(value, bool) or not isinstance(value, (int, float))
-        ):
-            raise ValueError(f"{name}.{key}: expected {schema.type}")
+        value = checked.parameters[key]
+        # bool is a subclass of int, so True would pass as a number otherwise
+        if isinstance(value, bool) and schema.type != "boolean":
+            raise ValueError(f"{checked.name}.{key}: expected {schema.type}")
+        if not isinstance(value, _PYTHON_TYPES[schema.type]):
+            raise ValueError(f"{checked.name}.{key}: expected {schema.type}")
 
 
 def write_results(path: str, results: List[JsonObject]) -> None:
-    """Write the results list as pretty-printed JSON.
-
-    Creates the output directory if it does not exist.
-    Using json.dump (not manual string building) guarantees the file is
-    always valid JSON regardless of what values the model produced.
-    """
+    """Write the results list as pretty-printed JSON."""
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
         json.dump(results, file, indent=2)
-        file.write("\n")   # trailing newline for POSIX compliance
+        file.write("\n")

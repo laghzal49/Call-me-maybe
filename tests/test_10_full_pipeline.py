@@ -77,15 +77,18 @@ test_cases = [
 print()
 for prompt in test_cases:
     result = decoder.run(prompt)
-    errors = validate_result(result, functions)
+    try:
+        validate_result(result, functions)
+        error = None
+    except ValueError as exc:
+        error = exc
 
-    status = "OK" if not errors else "FAIL"
+    status = "OK" if error is None else "FAIL"
     print(f"[{status}] prompt  : {prompt!r}")
     print(f"       name    : {result['name']!r}")
     print(f"       params  : {result['parameters']}")
-    if errors:
-        for e in errors:
-            print(f"       ERROR   : {e}")
+    if error is not None:
+        print(f"       ERROR   : {error}")
     print()
 
 # ── 3. what to implement to recode this project from scratch ──────────────────

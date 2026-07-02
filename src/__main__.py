@@ -1,9 +1,3 @@
-"""Command-line entry point and orchestration.
-
-uv run python -m src [--functions_definition <file>] [--input <file>]
-                     [--output <file>]
-"""
-
 import argparse
 import sys
 import time
@@ -68,4 +62,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt ;)")

@@ -49,7 +49,7 @@ path is forced (one child only).
 - **Why a class and not a list of candidates?** A trie naturally handles **shared
   prefixes** (all function names start with `fn_`): the shared part is a single
   chain of forced nodes, and branching happens only where the words differ. The
-  state machine uses exactly that to skip model calls on the forced part.
+  decoder's `_walk` uses exactly that to skip model calls on the forced part.
 
 ## How to reimplement
 
@@ -61,6 +61,6 @@ path is forced (one child only).
 ## Edge cases
 
 - If one valid word is a token-prefix of another, the shorter word's node is both
-  a leaf (`value` set) **and** has children. The walker in the state machine keeps
+  a leaf (`value` set) **and** has children. The decoder's `_walk` keeps
   descending while children exist; our function names are not prefixes of each
   other, so this does not occur in practice.

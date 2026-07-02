@@ -4,20 +4,19 @@ Two files are parsed:
   functions_definition.json — the functions the model can call.
   function_calling_tests.json — the natural-language prompts to process.
 
-Pydantic raises ValidationError for any type or field mismatch, which we
-convert to a plain ValueError so the caller gets a clean error message.
+Pydantic checks the JSON syntax, the top-level array shape, and the field
+types. Any mismatch raises ValidationError, which we convert to a plain
+ValueError so the caller gets a clean error message.
 """
 
-import json
-from typing import Any, Dict, List, Literal
+from typing import Dict, List, Literal
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 
 class TypeSchema(BaseModel):
     """The declared type of one parameter or return value."""
 
-    # Only these four primitive types are supported.
     type: Literal["number", "integer", "string", "boolean"]
     optional: bool = False
 
@@ -33,38 +32,32 @@ class FunctionDefinition(BaseModel):
 
     name: str
     description: str
-    parameters: Dict[str, TypeSchema]   # key = parameter name
+    parameters: Dict[str, TypeSchema]
     returns: TypeSchema
 
 
-def _load_json_array(path: str) -> List[Any]:
-    """Read a JSON file and return its contents, which must be an array."""
+_PROMPTS = TypeAdapter(List[Prompt])
+_FUNCTIONS = TypeAdapter(List[FunctionDefinition])
+
+
+def _read_text(path: str) -> str:
+    """Read a file's contents; I/O failures become ValueError."""
     try:
         with open(path, encoding="utf-8") as file:
-            data = json.load(file)
+            return file.read()
     except FileNotFoundError as error:
         raise ValueError(f"Error: file not found: {path}") from error
     except OSError as error:
         raise ValueError(f"Error: cannot read {path}: {error}") from error
-    except json.JSONDecodeError as error:
-        raise ValueError(f"Error: invalid JSON in {path}: {error}") from error
-    if not isinstance(data, list):
-        raise ValueError(f"Error: {path} must contain a JSON array")
-    return data
 
 
 def parse_prompts(path: str) -> List[Prompt]:
     """Load and validate prompts from a JSON file."""
-    entries = _load_json_array(path)
-    prompts: List[Prompt] = []
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Error: prompt entry {index} is not an object")
-        try:
-            prompts.append(Prompt(**entry))
-        except ValidationError as error:
-            raise ValueError(f"Error: prompt entry {index} invalid: {error}") from error
-    return prompts
+    raw = _read_text(path)
+    try:
+        return _PROMPTS.validate_json(raw)
+    except ValidationError as error:
+        raise ValueError(f"Error: invalid prompts in {path}: {error}") from error
 
 
 def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
@@ -72,20 +65,19 @@ def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
 
     Returns a dict keyed by function name for O(1) lookup during generation.
     """
-    entries = _load_json_array(path)
+    raw = _read_text(path)
+    try:
+        definitions = _FUNCTIONS.validate_json(raw)
+    except ValidationError as error:
+        raise ValueError(
+            f"Error: invalid function definitions in {path}: {error}"
+        ) from error
+
+    if not definitions:
+        raise ValueError(f"Error: no function definitions in {path}")
     functions: Dict[str, FunctionDefinition] = {}
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(f"Error: function entry {index} is not an object")
-        try:
-            function = FunctionDefinition(**entry)
-        except ValidationError as error:
-            raise ValueError(
-                f"Error: function entry {index} invalid: {error}"
-            ) from error
+    for function in definitions:
         if function.name in functions:
             raise ValueError(f"Error: duplicate function name: {function.name}")
         functions[function.name] = function
-    if not functions:
-        raise ValueError("Error: at least one function definition is required")
     return functions

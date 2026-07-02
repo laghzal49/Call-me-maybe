@@ -41,117 +41,74 @@ and lets the model make only the choices that matter.
 
 ---
 
-## Full pipeline diagram
+## Full pipeline
 
+```mermaid
+flowchart TD
+    FD[functions_definition.json] -->|parse_functions| F["Dict[name, FunctionDefinition]"]
+    TI[function_calling_tests.json] -->|parse_prompts| P["List[Prompt]"]
+
+    subgraph startup ["Startup — once per run (Decoder.__init__)"]
+        LLM[Small_LLM_Model] --> D[Decoder]
+        F --> D
+        D --> V["token-id sets<br/>(digits, dot, minus,<br/>end tokens, quote tokens)"]
+        D --> FT["function-name trie"]
+        D --> BT["boolean trie (true/false)"]
+        D --> B["functions text block<br/>(injected into every prompt)"]
+    end
+
+    subgraph perprompt ["Per prompt — Decoder.run(prompt)"]
+        S1["encode(INSTRUCTION + '&#123;&quot;name&quot;: &quot;')"] --> S2["_walk(function trie)<br/>model picks the function name"]
+        S2 --> S3["emit('&quot;, &quot;parameters&quot;: &#123;')"]
+        S3 --> S4{"for each parameter<br/>(schema order)"}
+        S4 -->|string| V1["_string()<br/>stop when a quote token wins"]
+        S4 -->|boolean| V2["_walk(boolean trie)<br/>true or false only"]
+        S4 -->|integer / number| V3["_number()<br/>digits, sign, one dot;<br/>stop on end token"]
+        V1 --> S4
+        V2 --> S4
+        V3 --> S4
+        S4 -->|done| S5["emit('&#125;&#125;')  →  JsonObject"]
+    end
+
+    P --> perprompt
+    startup --> perprompt
+    S5 --> VAL["validate_result()<br/>strict pydantic schema check"]
+    VAL --> W["write_results()<br/>json.dump → guaranteed valid JSON"]
+    W --> OUT[data/output/function_calling_results.json]
 ```
-INPUTS
-══════
-functions_definition.json ──▶ parse_functions() ──▶ Dict[name, FunctionDefinition]
-                                                              │
-function_calling_tests.json ──▶ parse_prompts() ──▶ List[Prompt]
-                                                              │
-                                                              ▼
-                              STARTUP (once per run)
-                              ═════════════════════
-                          Small_LLM_Model()  ──▶  llm
-                          Vocab(llm)         ──▶  vocab   (token-id sets)
-                          build_generation_context(llm, functions)
-                                ├── functions_block  (text injected into every prompt)
-                                ├── function_trie    (token paths for every function name)
-                                └── boolean_trie     (token paths for "true" / "false")
 
-                                              │
-                                              ▼
-                              PER PROMPT  (StateMachine)
-                              ═════════════════════════════
-          ┌───────────────────────────────────────────────────────────────┐
-          │                                                               │
-          │  self.ids = encode(INSTRUCTION + '{"name": "')               │
-          │                                                               │
-          │   ┌──────────────────────────────────────────────────────┐   │
-          │   │  STATE: NAME                                         │   │
-          │   │  walk_trie(function_trie)                            │   │
-          │   │    ├─ forced steps: only 1 child  → append, no model │   │
-          │   │    └─ branching step: model picks from valid children │   │
-          │   │  emit('", "parameters": {')                          │   │
-          │   └──────────────────────────────────────────────────────┘   │
-          │                         │                                     │
-          │                         ▼                                     │
-          │   ┌──────────────────────────────────────────────────────┐   │
-          │   │  STATE: PARAMS                                       │   │
-          │   │  for each parameter (in schema order):              │   │
-          │   │                                                      │   │
-          │   │    emit('"key": ')                                   │   │
-          │   │                                                      │   │
-          │   │    string  → decode_string()                         │   │
-          │   │               loop: pick_excluding(quote_ids)        │   │
-          │   │               stop: quote token wins over content    │   │
-          │   │                                                      │   │
-          │   │    boolean → walk_trie(boolean_trie)                 │   │
-          │   │               constrained to "true" or "false"       │   │
-          │   │                                                      │   │
-          │   │    integer → decode_number(integer_only=True)        │   │
-          │   │    number  → decode_number(integer_only=False)       │   │
-          │   │               allowed: digits [+sign at start]       │   │
-          │   │               [+dot once, for number]                │   │
-          │   │               stop: end-token (,  }  ]  …) wins     │   │
-          │   │                                                      │   │
-          │   │    emit(', ')  between params; emit('}}') at end     │   │
-          │   └──────────────────────────────────────────────────────┘   │
-          │                         │                                     │
-          │                         ▼                                     │
-          │               STATE: DONE  →  return JsonObject              │
-          └───────────────────────────────────────────────────────────────┘
-                                              │
-                                              ▼
-                              OUTPUT
-                              ══════
-                          validate_result()   (schema safety check)
-                          write_results()     (json.dump → guaranteed valid JSON)
-                                              │
-                                              ▼
-                    data/output/function_calling_results.json
+## Constrained decoding — how a single step works
 
-
-CONSTRAINED DECODING — how a single step works
-═══════════════════════════════════════════════
-
-  LLM produces logits[0 .. vocab_size-1]  (one float per possible next token)
-         │
-         ▼  MASK  (set forbidden tokens to −∞)
-         │
-  Only the valid tokens survive
-         │
-         ▼  argmax  (greedy pick)
-         │
-  best_token  →  appended to self.ids  →  becomes input for the next step
-
-  What counts as "valid" depends on the current generation context:
-
-  ┌────────────────┬────────────────────────────────────────────────────┐
-  │ Context        │ Valid tokens                                       │
-  ├────────────────┼────────────────────────────────────────────────────┤
-  │ function name  │ children of current trie node                     │
-  │ boolean value  │ children of current trie node ("true" / "false")  │
-  │ string content │ all tokens whose text does NOT contain "           │
-  │ string close   │ best token among those that DO contain "           │
-  │                │ (prefix before " is salvaged into the string)      │
-  │ integer digit  │ digit-only tokens; minus only at position 0        │
-  │ number digit   │ digit tokens; minus at pos 0; one dot after digit  │
-  │ number/int end │ end-tokens (, } ] space …) after at least 1 digit  │
-  └────────────────┴────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    L["LLM logits<br/>one float per token id"] --> M["MASK<br/>forbidden tokens → −∞"]
+    M --> A["argmax<br/>(greedy pick)"]
+    A --> T[best token id]
+    T -->|"append to self.ids"| L
 ```
+
+What counts as "valid" depends on the current generation context:
+
+| Context | Valid tokens |
+|---------|--------------|
+| function name | children of the current trie node |
+| boolean value | children of the current trie node (`true` / `false`) |
+| string content | all tokens whose text does **not** contain `"` |
+| string close | best token among those that **do** contain `"` (any prefix before the `"` is salvaged into the string) |
+| integer digit | digit-only tokens; minus only at position 0 |
+| number digit | digit tokens; minus at position 0; one dot after a digit |
+| number/integer end | end tokens (`,` `}` `]` space, newline) once at least one digit exists |
 
 ---
 
-## Pipeline (reading order)
+## Reading order
 
 ```
-input files ─▶ parsing ─▶ build context (tries + text) ─▶ for each prompt:
-                                                              StateMachine.run()
-                                                              ├─ pick name (trie)
-                                                              └─ decode each value
-                                                          ─▶ validate ─▶ write JSON
+input files ─▶ parsing ─▶ Decoder setup (tries + token sets) ─▶ for each prompt:
+                                                                   Decoder.run()
+                                                                   ├─ pick name (trie)
+                                                                   └─ decode each value
+                                                               ─▶ validate ─▶ write JSON
 ```
 
 Read the files in this order:
@@ -160,12 +117,9 @@ Read the files in this order:
 |-----|------|--------------|
 | [01](01-parsing.md) | `src/parsing.py` | Load & validate the input JSON files |
 | [02](02-trie.md) | `src/trie.py` | Trie data structure for fixed-choice tokens |
-| [03](03-vocab.md) | `src/vocab.py` | Which token ids are digits / quotes / etc. |
-| [04](04-masking.md) | `src/masking.py` | Pick one token from the valid set |
-| [05](05-context.md) | `src/context.py` | Precompute tries + prompt text once |
-| [06](06-state_machine.md) | `src/state_machine.py` | The token-by-token driver |
-| [07](08-output.md) | `src/output.py` | Validate against schema + write file |
-| [08](09-main.md) | `src/__main__.py` | CLI and orchestration |
+| [03](03-decoder.md) | `src/decoder.py` | Vocab sets, logit masking, and the per-prompt generation loop |
+| [04](04-output.md) | `src/output.py` | Validate against schema + write file |
+| [05](05-main.md) | `src/__main__.py` | CLI and orchestration |
 
 `src/__init__.py` only marks `src` as a package so `python -m src` works.
 
