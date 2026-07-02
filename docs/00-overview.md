@@ -72,7 +72,7 @@ flowchart TD
 
     P --> perprompt
     startup --> perprompt
-    S5 --> VAL["validate_result()<br/>strict pydantic schema check"]
+    S5 --> VAL["validate_result()<br/>schema safety check"]
     VAL --> W["write_results()<br/>json.dump → guaranteed valid JSON"]
     W --> OUT[data/output/function_calling_results.json]
 ```

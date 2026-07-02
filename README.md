@@ -29,7 +29,7 @@ flowchart LR
     TI[function_calling_tests.json] --> P
     P --> D["Decoder setup (once)<br/>vocab token sets · tries ·<br/>functions text block"]
     D --> R["Decoder.run(prompt)<br/>trie-constrained name +<br/>type-constrained values"]
-    R --> V["output.py<br/>strict pydantic validation"]
+    R --> V["output.py<br/>schema validation"]
     V --> O[function_calling_results.json]
 ```
 

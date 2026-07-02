@@ -46,9 +46,9 @@ per-entry type checks:
   `FileNotFoundError` / `OSError` into a readable `ValueError`.
 - `parse_prompts` feeds the raw text to a `TypeAdapter(List[Prompt])`, which
   validates JSON syntax, the top-level array shape, and every entry in one call.
-- `parse_functions` uses a `RootModel[List[FunctionDefinition]]` whose
-  `model_validator` additionally rejects **duplicate names** and requires **at
-  least one** function; the result is returned as a dict keyed by name.
+- `parse_functions` does the same with `TypeAdapter(List[FunctionDefinition])`,
+  then a plain loop rejects an **empty list** and **duplicate names** while
+  building the dict keyed by name.
 
 Any `ValidationError` is re-raised as a `ValueError` naming the file, so the
 caller gets one clean message with pydantic's per-entry details inside.
@@ -67,9 +67,9 @@ caller gets one clean message with pydantic's per-entry details inside.
 1. Define the three pydantic models exactly as above.
 2. Write one helper that reads a file inside `try/except` and turns I/O errors
    into `ValueError`.
-3. Validate prompts with `TypeAdapter(List[Prompt]).validate_json(raw)`.
-4. Wrap the function list in a `RootModel` with a `model_validator` that adds
-   the duplicate-name and non-empty checks; return a dict keyed by name.
+3. Validate each file with `TypeAdapter(List[...]).validate_json(raw)`.
+4. Loop over the function list to reject empty input and duplicate names while
+   building the dict keyed by name.
 
 ## Edge cases
 

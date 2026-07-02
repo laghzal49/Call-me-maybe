@@ -2,17 +2,16 @@
 
 ## Role
 
-The final safety net: check each generated call against the function schema with
-strict pydantic models, then write all results to the output JSON file.
+The final safety net: check each generated call against the function schema, then
+write all results to the output JSON file.
 
 ## Theory
 
 Constrained decoding already guarantees structural validity, but a separate
 **validation** step enforces the contract independently ("trust, but verify"). If
-a result ever breaks the schema, we want to know — not ship it silently. Instead
-of hand-written `if` checks, the function definitions are turned into **strict
-pydantic models built at runtime** (`create_model`), so the same library that
-validated the inputs also validates the outputs. Writing is done with a context
+a result ever breaks the schema, we want to know — not ship it silently. One
+small pydantic model checks the fixed outer shape; three plain checks cover the
+parts that depend on the function definitions. Writing is done with a context
 manager so the file is always closed, and `json.dump` guarantees valid,
 well-escaped JSON.
 
@@ -27,36 +26,30 @@ well-escaped JSON.
 
 ```mermaid
 flowchart LR
-    FD["function definitions"] --> SIG["hashable signature<br/>(name + param types)"]
-    SIG --> AD["_adapter (lru_cache)<br/>discriminated union of<br/>one strict model per function"]
-    R["result dict"] --> AD
-    AD -->|ok| OK["passes"]
-    AD -->|ValidationError| ERR["ValueError"]
+    R["result dict"] --> S["Result model<br/>exactly prompt / name / parameters"]
+    S --> N["name is a known function?"]
+    N --> K["parameter keys match<br/>the declaration exactly?"]
+    K --> T["each value's Python type<br/>matches its declared type?"]
+    T --> OK["passes"]
+    S & N & K & T -.->|failure| ERR["ValueError"]
 ```
 
-`_result_model(name, parameters)` builds, for one function, a strict model with
-`extra="forbid"`:
+`validate_result` checks, in order (matching the subject's V.4.2 rules):
 
-- `prompt: StrictStr`
-- `name: Literal[name]` — only that exact function name is accepted.
-- `parameters:` a nested model with one required field per declared parameter,
-  also `extra="forbid"`, so missing **and** extra parameters are both rejected.
+1. **Shape** — the `Result` pydantic model with `extra="forbid"`: keys are
+   exactly `{prompt, name, parameters}`, `prompt` and `name` are strings,
+   `parameters` is a dict. A `ValidationError` becomes a `ValueError`.
+2. **Known name** — `name` must be one of the declared functions.
+3. **Exact parameters** — the parameter keys must equal the declared keys
+   (missing and extra parameters are both rejected).
+4. **Value types** — each value is checked with `isinstance` against a small
+   `type → Python types` table: `string → str`, `boolean → bool`,
+   `integer`/`number → int or float`. Because `bool` is a subclass of `int` in
+   Python, a boolean is rejected explicitly wherever a number is expected —
+   otherwise `True` would pass as a number.
 
-The field types are **strict**: `StrictStr`, `StrictBool`, and
-`Union[StrictInt, StrictFloat]` for `integer`/`number`. Strict types refuse
-coercion — and in particular `StrictInt` rejects `True`, which plain `int` would
-accept because `bool` is a subclass of `int` in Python.
-
-`_adapter(signature)` combines the per-function models into a single validator:
-a **discriminated union** on the `name` field (so pydantic picks the right model
-directly and error messages stay readable). It is wrapped in `lru_cache` keyed
-by the hashable signature tuple, so the models are built once per run, not once
-per prompt.
-
-`validate_result` converts the definitions to that signature tuple, runs the
-adapter, and re-raises any `ValidationError` as a `ValueError` — matching the
-subject's V.4.2 rules: exactly the keys `{prompt, name, parameters}`, a known
-function name, exactly the declared parameters, and matching value types.
+Any failure raises a `ValueError` with a precise message (e.g.
+`"fn_add_numbers.a: expected number"`).
 
 `write_results`:
 
@@ -68,31 +61,29 @@ function name, exactly the declared parameters, and matching value types.
 
 - **Why validate after constrained decoding?** Defense in depth. The decoder
   *should* be correct; validation proves it and catches any future regression.
-- **Why pydantic models instead of manual checks?** The subject mandates pydantic
-  for data classes; building the result models from the definitions keeps one
-  source of truth and gives precise error messages for free.
-- **Why strict types?** Non-strict pydantic would coerce (`"42"` → `42`,
-  `True` → `1`); strict types make the check mean "the decoder produced the right
-  Python type", not "something convertible".
+- **Why one static model + plain checks (not models generated per function)?**
+  The outer shape is fixed, so one pydantic model covers it; the per-function
+  parts (known name, exact keys, value types) are three obvious comparisons.
+  Generating strict pydantic models per function at runtime would validate the
+  same things with far more machinery.
+- **Why reject `bool` for numbers explicitly?** Because `isinstance(True, int)`
+  is `True` in Python; without the explicit check a boolean could sneak into a
+  number field.
 - **Why `json.dump` (not manual string building)?** It guarantees valid JSON and
   correct escaping (quotes, backslashes, unicode) for free.
 
 ## How to reimplement
 
-1. Write a function that, given a name and its parameter types, uses
-   `create_model` to build the strict result model described above.
-2. Combine all function models into a `TypeAdapter` over a discriminated union
-   on `name`; cache it with `lru_cache` keyed by a hashable signature.
-3. Write `validate_result` to build the signature, run the adapter, and convert
-   `ValidationError` to `ValueError`.
-4. Write `write_results` to ensure the directory exists and dump the list as
+1. Define the `Result` model (`extra="forbid"`; `prompt: str`, `name: str`,
+   `parameters: Dict[str, Any]`).
+2. Write `validate_result` with the four checks above; raise `ValueError` with a
+   clear message on the first failure.
+3. Write `write_results` to ensure the directory exists and dump the list as
    pretty JSON inside a context manager.
 
 ## Edge cases
 
 - Output directory does not exist → created automatically.
-- Only one function defined → the union degenerates to a single model (a
-  one-member discriminated union is invalid in pydantic, so it is special-cased).
 - A bad result → `validate_result` raises; `__main__` catches it per prompt,
   prints a message, and keeps going (one bad prompt does not fail the batch).
 - Write failure (permissions, disk) → `OSError`, caught in `__main__`.
