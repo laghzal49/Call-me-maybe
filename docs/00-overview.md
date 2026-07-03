@@ -51,23 +51,20 @@ flowchart TD
     subgraph startup ["Startup — once per run (Decoder.__init__)"]
         LLM[Small_LLM_Model] --> D[Decoder]
         F --> D
-        D --> V["token-id sets<br/>(digits, dot, minus,<br/>end tokens, quote tokens)"]
-        D --> FT["function-name trie"]
-        D --> BT["boolean trie (true/false)"]
-        D --> B["functions text block<br/>(injected into every prompt)"]
+        D --> V["token-id groups<br/>(digits, dot, minus,<br/>end tokens, quote tokens)"]
     end
 
     subgraph perprompt ["Per prompt — Decoder.run(prompt)"]
-        S1["encode(INSTRUCTION + '&#123;&quot;name&quot;: &quot;')"] --> S2["_walk(function trie)<br/>model picks the function name"]
-        S2 --> S3["emit('&quot;, &quot;parameters&quot;: &#123;')"]
+        S1["encode(PROMPT_TEMPLATE + '&#123;&quot;name&quot;: &quot;')"] --> S2["choose(function names)<br/>model picks the function name"]
+        S2 --> S3["add('&quot;, &quot;parameters&quot;: &#123;')"]
         S3 --> S4{"for each parameter<br/>(schema order)"}
-        S4 -->|string| V1["_string()<br/>stop when a quote token wins"]
-        S4 -->|boolean| V2["_walk(boolean trie)<br/>true or false only"]
-        S4 -->|integer / number| V3["_number()<br/>digits, sign, one dot;<br/>stop on end token"]
+        S4 -->|string| V1["gen_string()<br/>stop when a quote token wins"]
+        S4 -->|boolean| V2["choose(true / false)"]
+        S4 -->|integer / number| V3["gen_number()<br/>digits, sign, one dot;<br/>stop on end token"]
         V1 --> S4
         V2 --> S4
         V3 --> S4
-        S4 -->|done| S5["emit('&#125;&#125;')  →  JsonObject"]
+        S4 -->|done| S5["add('&#125;&#125;')  →  JsonObject"]
     end
 
     P --> perprompt
@@ -91,22 +88,22 @@ What counts as "valid" depends on the current generation context:
 
 | Context | Valid tokens |
 |---------|--------------|
-| function name | children of the current trie node |
-| boolean value | children of the current trie node (`true` / `false`) |
+| function name | next token ids of the names still possible |
+| boolean value | next token ids of `true` / `false` still possible |
 | string content | all tokens whose text does **not** contain `"` |
 | string close | best token among those that **do** contain `"` (any prefix before the `"` is salvaged into the string) |
 | integer digit | digit-only tokens; minus only at position 0 |
 | number digit | digit tokens; minus at position 0; one dot after a digit |
-| number/integer end | end tokens (`,` `}` `]` space, newline) once at least one digit exists |
+| number/integer end | end tokens (`,` `}` space, newline) once at least one digit exists |
 
 ---
 
 ## Reading order
 
 ```
-input files ─▶ parsing ─▶ Decoder setup (tries + token sets) ─▶ for each prompt:
+input files ─▶ parsing ─▶ Decoder setup (vocab token groups) ─▶ for each prompt:
                                                                    Decoder.run()
-                                                                   ├─ pick name (trie)
+                                                                   ├─ choose the name
                                                                    └─ decode each value
                                                                ─▶ validate ─▶ write JSON
 ```
@@ -116,8 +113,7 @@ Read the files in this order:
 | Doc | File | What it adds |
 |-----|------|--------------|
 | [01](01-parsing.md) | `src/parsing.py` | Load & validate the input JSON files |
-| [02](02-trie.md) | `src/trie.py` | Trie data structure for fixed-choice tokens |
-| [03](03-decoder.md) | `src/decoder.py` | Vocab sets, logit masking, and the per-prompt generation loop |
+| [03](03-decoder.md) | `src/decoder.py` | Vocab groups, logit masking, and the per-prompt generation loop |
 | [04](04-output.md) | `src/output.py` | Validate against schema + write file |
 | [05](05-main.md) | `src/__main__.py` | CLI and orchestration |
 

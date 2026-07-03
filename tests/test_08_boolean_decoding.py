@@ -1,95 +1,75 @@
 """
-CONCEPT 8 — BOOLEAN DECODING (trie over "true" / "false")
-===========================================================
-Booleans are just a special case of trie walking.
+CONCEPT 8 — BOOLEAN DECODING (choose over "true" / "false")
+============================================================
+Booleans are just a special case of Decoder.choose().
 
-We build a trie over exactly two words: ["true", "false"].
-The model then walks the trie token by token, constrained to whichever
-of the two words is still reachable at each step.
+We call choose(["true", "false"]).  The model walks the two token paths
+step by step, constrained to whichever word is still reachable.  After
+the walk, the result is either "true" or "false" and we convert:
+result == "true"  →  Python True / False.
 
-After the walk, the leaf's value is either "true" or "false".
-We convert:  result == "true"  →  Python True / False.
-
-Why a trie instead of just comparing two logits?
+Why token paths instead of just comparing two logits?
   "true" and "false" may each tokenize into MULTIPLE tokens.
-  We cannot compare them in a single step — we must walk token by token.
-  The trie handles both single-token and multi-token words uniformly.
+  We cannot compare them in a single step — we must pick token by token.
+  choose() handles single-token and multi-token words uniformly.
 
 Run: uv run python tests/test_08_boolean_decoding.py   (no model needed)
 """
 
 import sys
+from typing import Dict, List
 
 sys.path.insert(0, ".")
 
-from src.trie import Trie  # noqa: E402
-
-# ── 1. build the boolean trie with fake token ids ─────────────────────────────
-# In real code: Trie.from_strings(llm, ["true", "false"])
-# Here we assign ids manually so no model is needed.
-
-#  "true"  → tokens [100, 200]   ("tr" and "ue", for example)
+# Fake token ids so no model is needed:
+#  "true"  → tokens [100, 200]       ("tr" and "ue", for example)
 #  "false" → tokens [300, 400, 500]  ("f", "al", "se")
+ENCODED: Dict[str, List[int]] = {
+    "true": [100, 200],
+    "false": [300, 400, 500],
+}
 
-bool_trie = Trie()
-bool_trie.insert([100, 200], "true")
-bool_trie.insert([300, 400, 500], "false")
-
-root = bool_trie.root
-
-# ── 2. inspect the trie ───────────────────────────────────────────────────────
-
-assert set(root.children.keys()) == {100, 300}
-print("Boolean trie root children:", set(root.children.keys()))
+# ── 1. the only real choice is the first token ────────────────────────────────
+first_allowed = sorted({ids[0] for ids in ENCODED.values()})
+assert first_allowed == [100, 300]
+print("Step 0 allowed tokens:", first_allowed)
 print("  token 100 → leads to 'true'")
 print("  token 300 → leads to 'false'")
+print("  After that first token only ONE word remains → forced steps")
 
-# After 100 → only 200 remains (forced step)
-node_true = root.children[100]
-assert set(node_true.children.keys()) == {200}
-print("\nAfter token 100: children =", set(node_true.children.keys()))
-print("  Only one choice → forced step (skip model)")
-
-# Leaf
-leaf_true = node_true.children[200]
-assert leaf_true.value == "true"
-assert leaf_true.children == {}
-print("Leaf: value =", repr(leaf_true.value))
-
-# ── 3. simulate the walk ──────────────────────────────────────────────────────
+# ── 2. simulate the choose() loop ─────────────────────────────────────────────
 
 
-def walk_bool(preferred_first_token: int) -> bool:
+def choose_bool(preferred_first_token: int) -> bool:
     """
-    Simulate _walk(bool_trie.root).
-    At the root (branching point), pick preferred_first_token.
-    All subsequent steps are forced.
+    Same loop as Decoder.choose(["true", "false"]), with the model
+    replaced by a stub that picks preferred_first_token at the branch.
     Returns the Python bool.
     """
-    node = root
-    while node.children:
-        if len(node.children) == 1:
-            (tid, child), = node.children.items()
+    paths = dict(ENCODED)
+    step = 0
+    while len(paths) > 1:
+        allowed = sorted({ids[step] for ids in paths.values()})
+        if len(allowed) == 1:
+            token = allowed[0]  # forced: no model call
         else:
-            # This is the only branching point — the model picks here.
-            # We simulate by using preferred_first_token.
-            tid = preferred_first_token
-            child = node.children[tid]
-        node = child
-    return (node.value or "") == "true"
+            token = preferred_first_token  # the model picks here
+        paths = {o: ids for o, ids in paths.items() if ids[step] == token}
+        step += 1
+    (choice,) = paths
+    return choice == "true"
 
 
-result_true = walk_bool(preferred_first_token=100)
+result_true = choose_bool(preferred_first_token=100)
 assert result_true is True
-print("\nWalk (model picks token 100) →", result_true)
+print("\nchoose (model picks token 100) →", result_true)
 
-result_false = walk_bool(preferred_first_token=300)
+result_false = choose_bool(preferred_first_token=300)
 assert result_false is False
-print("Walk (model picks token 300) →", result_false)
+print("choose (model picks token 300) →", result_false)
 
-# ── 4. key point ──────────────────────────────────────────────────────────────
-# The model's logits at the branching point determine whether it generates
-# "true" or "false" — just like with function names.
-# After that first branching token, all remaining tokens are forced.
+# ── 3. key point ──────────────────────────────────────────────────────────────
+# The model's logits at the first divergence decide "true" vs "false" —
+# exactly like function-name selection, just with two fixed words.
 
-print("\nOK: boolean decoding is just a 2-word trie walk")
+print("\nOK: boolean decoding is choose() over two fixed words")

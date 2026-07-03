@@ -15,7 +15,7 @@ Why does this matter for constrained decoding?
   A function name like "fn_add_numbers" may split into SEVERAL tokens:
       ["fn", "_add", "_numbers"]
   The model picks them ONE AT A TIME.  We must constrain each token
-  individually — that is why we build a TRIE (see test_04_trie.py).
+  individually — that is why choose() filters token paths (see test_09).
 
 Run: uv run python tests/test_01_tokenization.py
      (requires the model to be downloaded)
@@ -56,12 +56,12 @@ for i, tok_id in enumerate(ids):
     piece = llm.decode([tok_id])
     print(f"  token {i}: id={tok_id:6d}  text={piece!r}")
 
-# ── 4. why multi-token words need a trie ─────────────────────────────────────
+# ── 4. why multi-token words need path filtering ─────────────────────────────────────
 # If "fn_add_numbers" is 3 tokens, the model picks token-by-token.
 # After picking the first token (say id=14176 → "fn"), we must ensure
 # the NEXT token continues a valid function name — not just any token.
-# A trie over the encoded ids of every function name solves this exactly.
+# Filtering the encoded ids of every function name step by step solves this.
 
 print()
 print("Conclusion: function names may span multiple tokens.")
-print("The trie (test_04) constrains each token so only valid names can form.")
+print("choose() (test_09) constrains each token so only valid names can form.")

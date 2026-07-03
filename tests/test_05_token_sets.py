@@ -53,7 +53,7 @@ print("  quote_ids :", sorted(quote_ids))
 print("  end_ids   :", sorted(end_ids))
 
 # ── 2. how the allowed set changes while decoding a number ───────────────────
-# _number() assembles a different allowed set at each step.
+# gen_number() assembles a different allowed set at each step.
 
 print("\nAllowed set as a number is built up:")
 
@@ -64,7 +64,7 @@ def allowed_for_number(
     has_dot: bool,
     integer_only: bool = False,
 ) -> set:
-    """Mirror the logic in Decoder._number()."""
+    """Mirror the logic in Decoder.gen_number()."""
     allowed = set(digit_ids)
     if not text and minus_id != -1:          # sign only at the very start
         allowed.add(minus_id)

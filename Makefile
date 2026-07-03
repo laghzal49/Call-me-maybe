@@ -1,52 +1,39 @@
-# Variables
-GOINFRE_USER   = /goinfre/tlaghzal
-CACHE_DIR      = $(GOINFRE_USER)/uv-cache
-VENV_DIR       = $(GOINFRE_USER)/call_venv
-HF_HOME_DIR    = $(GOINFRE_USER)/hf-cache
-CPU_INDEX      = https://download.pytorch.org/whl/cpu
+CACHE_DIR = goinfre/
+SRC_DIR = src
+UV_ENV = UV_CACHE_DIR="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
+HF_ENV = HF_HOME="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
 
-.PHONY: install run debug clean lint lint-strict
+all: install run
+
+add:
+	@UV_CACHE_DIR="$(HOME)/$(CACHE_DIR)" uv add pydantic numpy ./llm_sdk accelerate
+	@UV_CACHE_DIR="$(HOME)/$(CACHE_DIR)" uv add --dev flake8 mypy
 
 install:
-	@echo "Creating storage directories in goinfre..."
-	@mkdir -p $(CACHE_DIR)
-	@mkdir -p $(VENV_DIR)
-	@mkdir -p $(HF_HOME_DIR)
-	@if [ ! -L .venv ]; then \
-		echo "Creating symbolic link for .venv..."; \
-		rm -rf .venv; \
-		ln -s $(VENV_DIR) .venv; \
-	fi
-	@echo "Installing dependencies..."
-	@export UV_CACHE_DIR=$(CACHE_DIR); \
-	unset TMPDIR; \
-	uv sync --extra-index-url $(CPU_INDEX)
-	@echo "Setup complete!"
+	@$(UV_ENV) uv sync
 
 run:
-	@export UV_CACHE_DIR=$(CACHE_DIR); \
-	export HF_HOME=$(HF_HOME_DIR); \
-	unset TMPDIR; \
-	uv run python -m src $(ARGS)
+	@$(HF_ENV) uv run python3 -m $(SRC_DIR)
+
+test:
+	@$(HF_ENV) uv run python3 -m src --input data/input/invalid_test_case.json
 
 debug:
-	@export UV_CACHE_DIR=$(CACHE_DIR); \
-	export HF_HOME=$(HF_HOME_DIR); \
-	unset TMPDIR; \
-	uv run python -m pdb -m src $(ARGS)
+	@$(HF_ENV) uv run python3 -m pdb -m $(SRC_DIR)
 
 clean:
-	@rm -rf .venv
-	@rm -rf .mypy_cache
-	@export UV_CACHE_DIR=$(CACHE_DIR); uv cache clean
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@rm -rf .mypy_cache
 
 lint:
-	@export UV_CACHE_DIR=$(CACHE_DIR); \
-	unset TMPDIR; \
-	uv run flake8 . && uv run mypy . --warn-return-any --warn-unused-ignores --ignore-missing-imports --disallow-untyped-defs --check-untyped-defs
+	@$(UV_ENV) uv run flake8 src/
+	@$(UV_ENV) uv run mypy src/ \
+		--warn-return-any \
+		--warn-unused-ignores \
+		--ignore-missing-imports \
+		--disallow-untyped-defs \
+		--check-untyped-defs
 
 lint-strict:
-	@export UV_CACHE_DIR=$(CACHE_DIR); \
-	unset TMPDIR; \
-	uv run flake8 . && uv run mypy . --strict
+	@$(UV_ENV) uv run flake8 src/
+	@$(UV_ENV) uv run mypy src/ --strict

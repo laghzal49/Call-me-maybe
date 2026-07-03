@@ -1,117 +1,98 @@
 """
-CONCEPT 9 — FUNCTION SELECTION (trie + model logits = semantic routing)
-========================================================================
+CONCEPT 9 — FUNCTION SELECTION (path filtering + model logits)
+===============================================================
 This is where constrained decoding becomes powerful.
 
-The function name trie has ONE branching point — the step where two
-function names first diverge in their token sequences.  At that step
-the model's logits reflect which function is most relevant to the prompt.
+Decoder.choose() encodes every function name to its token ids and keeps
+a dict of "still possible" options.  At each step the allowed tokens are
+the next ids of the remaining options.  If only one token is allowed the
+step is forced (no model call).  If several are allowed, the model's
+logits pick — and options that don't match the picked token are dropped.
 
 Example:
-  functions: ["fn_add_numbers", "fn_greet"]
-  Suppose both encode as:
+  functions: ["fn_add_numbers", "fn_greet", "fn_sqrt"]
+  Suppose they encode as:
       fn_add_numbers → [10, 20, 30]
       fn_greet       → [10, 40]
+      fn_sqrt        → [50, 60]
 
-  Trie structure:
-    root
-     └─[10]─▶ node_shared
-               ├─[20]─▶ … ─▶ leaf "fn_add_numbers"
-               └─[40]─▶ leaf "fn_greet"
+  Step 0: allowed = {10, 50} — BRANCHING.  Model picks.
+  If it picks 10: fn_sqrt is dropped.
+  Step 1: allowed = {20, 40} — BRANCHING.  Model picks again.
+  If it picks 20: only fn_add_numbers remains → done.
 
-  Step 1: token 10 — FORCED (only option). No model call.
-  Step 2: tokens {20, 40} — BRANCHING. Model picks here.
-
-  If prompt = "What is the sum of 3 and 5?" → model assigns high logit
-  to token 20 (the "_add" direction) → picks fn_add_numbers.
-
-  If prompt = "Say hello to Alice" → model assigns high logit to token 40
-  → picks fn_greet.
-
-The model is NOT asked to output the function name as text. It only
-contributes a logit comparison at the branching point.
+The model is NOT asked to output the function name as text.  It only
+contributes a logit comparison where valid names diverge.
 
 Run: uv run python tests/test_09_function_selection.py   (no model needed)
 """
 
 import sys
+from typing import Dict, List
 
 sys.path.insert(0, ".")
 
-from src.trie import Trie  # noqa: E402
-
-# ── 1. build a function-name trie with fake tokens ────────────────────────────
-# Two functions that share a prefix token (token 10 = "fn_"):
+# Fake token ids for three function names:
 #   fn_add_numbers → [10, 20, 30]   ("fn_", "add_", "numbers")
 #   fn_greet       → [10, 40]       ("fn_", "greet")
 #   fn_sqrt        → [50, 60]       ("fn", "_sqrt")  — different first token
+ENCODED: Dict[str, List[int]] = {
+    "fn_add_numbers": [10, 20, 30],
+    "fn_greet": [10, 40],
+    "fn_sqrt": [50, 60],
+}
 
-fn_trie = Trie()
-fn_trie.insert([10, 20, 30], "fn_add_numbers")
-fn_trie.insert([10, 40], "fn_greet")
-fn_trie.insert([50, 60], "fn_sqrt")
 
-root = fn_trie.root
+def choose(preferred: int) -> str:
+    """
+    Same loop as Decoder.choose(), with the model replaced by a stub:
+    at branching points, pick `preferred` if allowed, else the first
+    allowed token — simulating argmax over logits.
+    """
+    paths = dict(ENCODED)
+    step = 0
+    while len(paths) > 1:
+        allowed = sorted({ids[step] for ids in paths.values()})
+        if len(allowed) == 1:
+            token = allowed[0]  # forced: no model call
+        else:
+            token = preferred if preferred in allowed else allowed[0]
+        paths = {o: ids for o, ids in paths.items() if ids[step] == token}
+        step += 1
+    (choice,) = paths
+    return choice
 
-# ── 2. verify the trie structure ──────────────────────────────────────────────
-assert set(root.children.keys()) == {10, 50}
-print("Root branches (first token options):", set(root.children.keys()))
+
+# ── 1. the first step is a real branch ────────────────────────────────────────
+first_allowed = sorted({ids[0] for ids in ENCODED.values()})
+assert first_allowed == [10, 50]
+print("Step 0 allowed tokens:", first_allowed)
 print("  token 10 → 'fn_add_numbers' or 'fn_greet' (shared prefix)")
 print("  token 50 → 'fn_sqrt'")
 
-# The branching point for fn_add vs fn_greet is after token 10
-node_10 = root.children[10]
-assert set(node_10.children.keys()) == {20, 40}
-print("\nAfter token 10: children =", set(node_10.children.keys()))
-print("  THIS is where the model's logits decide the function")
-print("  token 20 → fn_add_numbers   token 40 → fn_greet")
-
-# ── 3. simulate two prompts ───────────────────────────────────────────────────
-
-
-def walk_with_logit_preference(tok_preference_at_branch: int) -> str:
-    """
-    Walk the trie.  At branching points, pick tok_preference_at_branch
-    if it is a valid child — simulating the model's argmax over logits.
-    """
-    node = root
-    while node.children:
-        if len(node.children) == 1:
-            (tid, child), = node.children.items()
-        else:
-            tid = (
-                tok_preference_at_branch
-                if tok_preference_at_branch in node.children
-                else next(iter(node.children))
-            )
-            child = node.children[tid]
-        node = child
-    return node.value or ""
-
-
+# ── 2. simulate three prompts ─────────────────────────────────────────────────
 # "What is the sum of 3 and 5?" → model assigns highest logit to token 20
-result_add = walk_with_logit_preference(tok_preference_at_branch=20)
+result_add = choose(preferred=20)
 assert result_add == "fn_add_numbers"
 print("\nPrompt: 'What is the sum of 3 and 5?'")
 print("  model prefers token 20 →", result_add)
 
 # "Say hello to Alice" → model assigns highest logit to token 40
-result_greet = walk_with_logit_preference(tok_preference_at_branch=40)
+result_greet = choose(preferred=40)
 assert result_greet == "fn_greet"
 print("\nPrompt: 'Say hello to Alice'")
 print("  model prefers token 40 →", result_greet)
 
-# fn_sqrt has a different first token, so it wins immediately when chosen
-result_sqrt = walk_with_logit_preference(tok_preference_at_branch=50)
+# fn_sqrt has a different first token, so it wins at step 0 when chosen
+result_sqrt = choose(preferred=50)
 assert result_sqrt == "fn_sqrt"
 print("\nPrompt: 'What is the square root of 9?'")
 print("  model prefers token 50 →", result_sqrt)
 
-# ── 4. key insight ────────────────────────────────────────────────────────────
-# We never feed the model a list of function names or ask it to "output the
-# function name".  We just let it predict the next token, and the trie ensures
-# that only token sequences that spell valid function names are possible.
-# The model's semantic understanding is captured entirely in which logit is
-# highest at the branching point.
+# ── 3. key insight ────────────────────────────────────────────────────────────
+# We never ask the model to "output the function name".  We just let it
+# predict the next token among the ids that still spell a valid name.
+# Its semantic understanding is captured entirely in which allowed logit
+# is highest where the names diverge.
 
-print("\nOK: function selection uses model logits at exactly one branching point")
+print("\nOK: function selection uses model logits only where names diverge")

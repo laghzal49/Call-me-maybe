@@ -2,10 +2,10 @@
 
 ## Role
 
-The engine. One `Decoder` class that is set up **once per run** (vocabulary token
-sets, tries, functions text block) and then builds **one function call per
-prompt** by extending a single token sequence, running the model only where there
-is a real choice and masking the logits so only valid tokens can be picked.
+The engine. One `Decoder` class that is set up **once per run** (vocabulary
+token groups) and then builds **one function call per prompt** by extending a
+single token sequence, running the model only where there is a real choice and
+masking the logits so only valid tokens can be picked.
 
 ## Theory
 
@@ -20,17 +20,18 @@ sequence faithfully *continues* rather than being reconstructed.
 ### Structure is written, content is masked
 
 We control the JSON shape, so we *write* the fixed parts (`{`, `"`, keys, `:`,
-`,`, `}`) directly with `_emit()`. We only call the model for:
+`,`, `}`) directly with `add()`. We only call the model for:
 
-- the **function name** (constrained by the function trie), and
+- the **function name** (constrained to the declared names), and
 - each **value** (constrained by its declared type).
 
 ### Logit masking = constrained argmax
 
 The subject defines constrained decoding as: the model produces logits for all
 tokens; you set the logits of invalid tokens to `−∞`; you sample only from the
-rest. We use greedy decoding, so `_pick(logits, allowed)` builds a `−∞` array,
-copies in the logits of the allowed ids, and takes the global `argmax`.
+rest. We use greedy decoding, so `pick(allowed)` fetches the logits, builds a
+`−∞` array, copies in the logits of the allowed ids, and takes the global
+`argmax`.
 
 ```mermaid
 flowchart LR
@@ -43,9 +44,9 @@ flowchart LR
 ```mermaid
 stateDiagram-v2
     [*] --> NAME: encode header + start of the JSON object
-    NAME --> PARAMS: _walk(function trie), emit the parameters key
+    NAME --> PARAMS: choose(function names), add the parameters key
     PARAMS --> PARAMS: next parameter (string / boolean / number)
-    PARAMS --> DONE: emit the closing braces
+    PARAMS --> DONE: add the closing braces
     DONE --> [*]: return prompt, name, parameters
 ```
 
@@ -60,124 +61,115 @@ stateDiagram-v2
 
 ### Setup (`__init__`) — everything that is the same for every prompt
 
-The vocabulary maps every token string to its id (`llm.get_vocab()`). Scanning
-~150k tokens on every generated step would be far too slow, so the token-id sets
-are precomputed once:
+The vocabulary file maps every token string to its id. Scanning ~150k tokens on
+every generated step would be far too slow, so the token-id groups are built
+once:
 
-- `_digits` — tokens made only of digits (multi-digit tokens like `42` included).
-- `_dot`, `_minus` — the `.` and `-` tokens (`-1` if absent from the vocab).
-- `_end_ids` — tokens that legally end a number: `,` `}` `]` space, newline.
-- `_quote_ids` — every token whose text **contains** `"` (`"`, `",`, `"}`, `)"`,
-  …). These are the candidates for **closing** a string and are forbidden as
-  plain string content.
-
-Also built once:
-
-- `_fn_trie` — a `Trie` over all function names (see [02](02-trie.md)).
-- `_bool_trie` — a `Trie` over `true` / `false`.
-- `_block` — the text listing each function (`- name(params): description`),
-  injected into the instruction header of every prompt.
+- `digit_ids` — tokens made only of digits (multi-digit tokens like `42`
+  included).
+- `quote_ids` — every token whose text **contains** `"` (`"`, `",`, `"}`, …).
+  These are the candidates for **closing** a string.
+- `plain_ids` — every other token; the only legal string content.
+- `dot_id`, `minus_id` — the `.` and `-` tokens (`None` if absent).
+- `end_ids` — tokens that legally end a number: `,` `}` space, newline.
 
 ### Helpers
 
-- `_emit(text)` — encode fixed text and append it to `self.ids`. No model call:
+- `encode(text)` — the SDK's tokenizer, flattened to a plain `List[int]`.
+- `add(text)` — encode fixed text and append it to `self.ids`. No model call:
   these are forced structural tokens.
-- `_logits()` — `llm.get_logits_from_input_ids(self.ids)`: next-token logits for
-  the current sequence.
-- `_pick(logits, allowed)` — the constrained argmax described above.
+- `pick(allowed)` — the constrained argmax described above.
 
-### `_walk(root)` — function name & boolean
+### `choose(options)` — function name & boolean
 
-Descends a trie. **Key optimization:** if the current node has exactly **one**
-child, that token is *forced*, so we append it without calling the model. Only
-at a real branch (2+ children) do we call `_logits()` and `_pick(...)` over the
-children. Returns the word stored on the leaf. All function names share the
+Encodes every option to token ids, then generates one token at a time. At each
+step the allowed ids are the next tokens of the options still possible. If only
+one id is allowed the step is forced (no model call). Otherwise the model picks,
+and options that don't match are dropped. When one option remains, its leftover
+tokens are appended and the option is returned. All function names share the
 `fn_` prefix — that whole prefix is forced, so name selection costs a model call
 only where the names actually diverge.
 
-### `_string()`
+### `gen_string()`
 
-Loops up to `_MAX_STRING` tokens. Each step compares the **best closing token**
-(`_pick` over `_quote_ids`) against the **best content token** (argmax after
-setting quote-bearing tokens to `−∞`). If closing wins, the string is finished;
-otherwise append the content token and continue. The model usually closes with a
-merged token like `",` or `"}`, so accepting *any* quote-bearing token as a
-close is what stops it rambling. If the winning close token carries content
-*before* the quote (e.g. `)` in `)"`), that prefix is salvaged into the string
-value and emitted. The opening and closing quotes themselves are written by
-`run()`, not here.
+Loops up to `MAX_STRING_TOKENS`. Each step compares the **best closing token**
+(argmax over `quote_ids`) against the **best content token** (argmax over
+`plain_ids`). If closing wins, the string is finished; otherwise append the
+content token and continue. The model usually closes with a merged token like
+`",` or `"}`, so accepting *any* quote-bearing token as a close is what stops it
+rambling. If the winning close token carries content *before* the quote (e.g.
+`world` in `world"`), that prefix is salvaged into the string value. The opening
+and closing quotes themselves are written by `run()`, not here.
 
-### `_number(integer_only)`
+### `gen_number(integer_only)`
 
-Tracks the text so far, `has_digit`, and `has_dot`. Each step builds the allowed
-set: digits always; minus only while the text is empty; the dot only for
-`number` (not `integer`), only after a digit, and only once; the **end tokens**
-only once at least one digit exists — so the model can choose to stop. If the
-pick is an end token, the number is done (it is not appended — the comma/brace
-is structure). Finally parse to `int` (integer) or `float` (number); if no digit
-was produced, default to `0.0`.
+Tracks the text so far. Each step builds the allowed list: digits always; minus
+only while the text is empty; the dot only for `number` (not `integer`), only
+after a digit, and only once; the **end tokens** only once at least one digit
+exists — so the model can choose to stop. If the pick is an end token, the
+number is done (it is not appended — the comma/brace is structure). Finally
+parse to `int` (integer) or `float` (number); if no digit was produced, default
+to `0`.
 
 ### `run(prompt)`
 
 1. Encode the instruction header (functions block + request) followed by the
    literal `{"name": "` — so the model's very next prediction is the first token
    of a function name.
-2. `_walk(self._fn_trie.root)` picks the name (fallback to the first function if
-   the trie is empty), then `_emit('", "parameters": {')`.
-3. For each parameter in schema order: `_emit('"key": ')`, then dispatch by
-   type — `string → _string()` between emitted quotes, `boolean →
-   _walk(self._bool_trie.root) == "true"`, otherwise `_number(...)` with
-   `integer_only` set for `integer`. `_emit(", ")` between parameters.
-4. `_emit("}}")` and return the dict.
+2. `choose(list(self.functions))` picks the name, then
+   `add('", "parameters": {')`.
+3. For each parameter in schema order: `add('"key": ')`, then dispatch by
+   type — `string → gen_string()` between added quotes, `boolean →
+   choose(["true", "false"]) == "true"`, otherwise `gen_number(...)` with
+   `integer_only` set for `integer`. `add(", ")` between parameters.
+4. `add("}}")` and return the dict.
 
 ## Why this design
 
-- **Why one class instead of vocab / masking / context / state-machine
-  modules?** Every piece (token sets, tries, helpers, decode loops) works on the
-  same shared state — the model, the vocab sets, and `self.ids`. One class means
-  the setup work is expressed as `__init__` and the per-prompt work as `run()`,
-  with no plumbing types passed between modules.
+- **Why one class?** Every piece (token groups, helpers, decode loops) works on
+  the same shared state — the model, the vocab groups, and `self.ids`. One class
+  means the setup work is `__init__` and the per-prompt work is `run()`, with no
+  plumbing types passed between modules.
 - **Why write structure instead of masking it?** At a structural position only
   one token is valid; masking would force it anyway. Writing it is identical and
-  skips a model call — the same "fast-forward forced tokens" trick as `_walk`.
+  skips a model call — the same trick as the forced steps in `choose()`.
 - **Why build a dict and not emit raw JSON text?** A real dict + `json.dump`
   cannot produce malformed JSON. Structural validity is free.
 - **Why stop a number with an "end token" choice (not by peeking at the
   unconstrained best)?** So termination is itself a constrained decision: the
   model picks from `digits ∪ end-tokens`, all valid. We never read an unmasked
   prediction.
-- **Why caps (`_MAX_STRING`, `_MAX_NUMBER`)?** Safety: a degenerate model can
-  never loop forever.
+- **Why caps (`MAX_STRING_TOKENS`, `MAX_NUMBER_TOKENS`)?** Safety: a degenerate
+  model can never loop forever.
 
 ## Speed notes
 
 The SDK recomputes the whole prefix on every `get_logits_from_input_ids` call
 (no KV cache), so cost ≈ number of model calls. We minimize calls by:
 
-- never calling the model for structure (only `_emit`),
-- skipping forced (single-child) trie steps in `_walk`,
+- never calling the model for structure (only `add`),
+- skipping forced steps in `choose` (one allowed token → no model call),
 - allowing multi-digit tokens so numbers take fewer steps,
 - deciding booleans in effectively one branching call.
 
 ## How to reimplement
 
-1. In `__init__`, load the vocab and build the five token-id sets, the two
-   tries, and the functions text block.
-2. Write `_emit` (append encoded text), `_logits` (call the SDK), and `_pick`
-   (mask to `−∞`, argmax).
-3. Write `_walk` with the single-child fast-forward.
-4. Write `_string` (compare best close vs. best content; salvage a prefix).
-5. Write `_number` (numeric mask + end tokens; parse at the end).
-6. Write `run` to encode the header, walk the name, loop the parameters
+1. In `__init__`, load the vocab and build the token-id groups.
+2. Write `encode` / `add` (append encoded text) and `pick` (mask to `−∞`,
+   argmax).
+3. Write `choose` (filter option token paths step by step).
+4. Write `gen_string` (compare best close vs. best content; salvage a prefix).
+5. Write `gen_number` (numeric allowed list + end tokens; parse at the end).
+6. Write `run` to encode the header, choose the name, loop the parameters
    dispatching by `schema.type`, and close with `}}`.
 
 ## Edge cases
 
-- Model emits no digits for a number → value defaults to `0.0` (schema
+- Model emits no digits for a number → value defaults to `0` (schema
   validation still passes for number/integer).
 - A function with no parameters → the loop is skipped and `"parameters": {}` is
   produced.
 - A string value containing a backslash (e.g. a regex) is allowed during
   generation and escaped correctly by `json.dump` at output time.
-- `.` or `-` missing from the vocabulary → their ids are `-1` and simply never
-  added to the allowed set.
+- `.` or `-` missing from the vocabulary → their ids are `None` and simply
+  never added to the allowed list.

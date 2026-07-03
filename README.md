@@ -27,8 +27,8 @@ the allowed function names and parameter value types.
 flowchart LR
     FD[functions_definition.json] --> P[parsing.py]
     TI[function_calling_tests.json] --> P
-    P --> D["Decoder setup (once)<br/>vocab token sets · tries ·<br/>functions text block"]
-    D --> R["Decoder.run(prompt)<br/>trie-constrained name +<br/>type-constrained values"]
+    P --> D["Decoder setup (once)<br/>vocab token groups"]
+    D --> R["Decoder.run(prompt)<br/>name-constrained choice +<br/>type-constrained values"]
     R --> V["output.py<br/>schema validation"]
     V --> O[function_calling_results.json]
 ```
@@ -45,9 +45,9 @@ flowchart LR
     T -->|append & repeat| L
 ```
 
-- **Function name** — constrained to a trie built from the declared function
+- **Function name** — constrained to the token paths of the declared function
   names; the model is only called where names diverge.
-- **Boolean** — constrained to a trie of `true` / `false`.
+- **Boolean** — the same mechanism over exactly `true` / `false`.
 - **Integer / number** — digits, an optional leading minus, at most one dot;
   stopping is itself a constrained choice of an end token.
 - **String** — any token without a quote is content; generation stops when a
@@ -99,29 +99,28 @@ make clean
 
 ## Algorithm Explanation
 
-The decoder follows the subject's mandatory constrained-decoding idea, split
-into a one-time **compile phase** and a per-prompt **decode phase**:
+The decoder follows the subject's mandatory constrained-decoding idea:
 
 1. The program loads and validates both input JSON files with pydantic models.
-2. `grammar.py` compiles the schema **once**, before any prompt runs: every
-   distinct FSM state (start of a number, after a digit, inside a string, a
-   trie branch point) is turned into a boolean mask the width of the
-   vocabulary, and every literal, zero-entropy span of the output template
-   (`", "parameters": {`, `"key": `, `, `, `}}`, ...) is pre-encoded to token
-   ids. Function names are inserted once into a token-id trie; each branching
-   node gets its mask cached at compile time too.
-3. `decoder.py` only *walks* that compiled grammar. Literal spans are
-   appended with no model call. The model is called only where the output
-   genuinely branches: which function name, which digits, which string
-   characters, `true` vs `false` — and each such call indexes into a mask
-   that was already built, instead of rebuilding one.
-4. After the function name is selected, parameters are generated one by one using
-   the selected function schema.
-5. Boolean parameters are constrained to the trie values `true` and `false`.
+2. `Decoder.__init__` reads the vocabulary file once and groups the token ids
+   needed by the constraints: digit tokens, tokens containing a quote, tokens
+   without one, the dot, the minus sign, and the tokens allowed to end a
+   number.
+3. The JSON structure itself (`{"name": "`, `", "parameters": {`, `"key": `,
+   `, `, `}}`) is appended by the code with no model call. The model is asked
+   only where there is a real choice, through one helper — `pick(allowed)` —
+   which fetches the logits, sets every token outside `allowed` to negative
+   infinity, and returns the argmax.
+4. The function name is selected with `choose()`: every declared name is
+   encoded to token ids, and at each step only the ids that continue a still
+   possible name are allowed; names that don't match the picked token are
+   dropped until one remains.
+5. Boolean parameters reuse `choose()` over exactly `true` and `false`.
 6. Number and integer parameters are constrained to tokens that keep a valid
-   numeric prefix. Stop tokens are only allowed after a complete number.
-7. String parameters are generated inside a JSON string context and stop on an
-   unescaped quote.
+   numeric prefix (optional leading minus, digits, at most one dot for
+   floats). Stop tokens are only allowed after at least one digit.
+7. String parameters are generated inside a JSON string context; generation
+   stops when the best quote-bearing token beats the best content token.
 8. The final file is written with `json.dump`, so the produced file is always
    valid JSON and contains only the required keys: `prompt`, `name`, and
    `parameters`.
@@ -133,15 +132,13 @@ does not choose functions with keyword rules or hardcoded examples.
 
 - Pydantic is used for all project classes that hold structured data.
 - The code is split by responsibility:
-  - `trie.py` — Trie data structure for fixed-choice constrained token paths.
-  - `grammar.py` — compile phase: builds every vocabulary mask and every
-    pre-encoded literal span once, before any prompt is processed.
-  - `decoder.py` — `Decoder` class: probes the model's real vocab width,
-    compiles the grammar, and runs the per-prompt constrained generation loop.
+  - `decoder.py` — `Decoder` class: the whole constrained generation loop.
   - `parsing.py` / `output.py` — I/O and schema validation.
-- The `Decoder` is set up once per run (grammar, tries, functions block) and
-  `run(prompt)` is called for each prompt, sharing all precomputed state — no
-  mask or literal span is ever rebuilt mid-run.
+- The `Decoder` is created once per run (vocabulary token groups are built in
+  `__init__`) and `run(prompt)` is called for each prompt.
+- Simplicity over micro-optimization: there is a single generic constrained
+  step (`pick`) and three small value generators on top of it, instead of a
+  separate grammar-compilation layer.
 - The implementation stays inside the mandatory subject. It does not implement
   bonus tokenizer recoding, model switching, batching, visualization, or nested
   argument support.
@@ -155,9 +152,7 @@ does not choose functions with keyword rules or hardcoded examples.
 src/
 ├── __main__.py   — CLI entry point and orchestration
 ├── parsing.py    — pydantic models + JSON input loading
-├── trie.py       — token-id trie for constrained name/boolean generation
-├── grammar.py    — compile phase: vocab masks + pre-encoded literal spans
-├── decoder.py    — Decoder class: compiles the grammar, walks it per prompt
+├── decoder.py    — Decoder class: constrained token-by-token generation
 └── output.py     — schema validation + JSON file writing
 ```
 
@@ -166,22 +161,21 @@ src/
 - JSON validity: the output file is written by Python's JSON module.
 - Schema reliability: function names are constrained to declared functions, and
   parameter values are constrained by declared primitive types.
-- Accuracy target: the subject asks for 90%+ function and argument accuracy. The
-  trie and type constraints improve reliability compared with prompt-only JSON
-  generation, while the final quality still depends on the small model logits.
-- Speed: prompts are processed sequentially, but the grammar (vocab masks,
-  trie constraints, literal spans) is compiled exactly once and reused for
-  every prompt. Each model call is a full forward pass with no KV cache, so
-  the decode loop only ever calls the model where the output genuinely
-  branches — never on forced structural tokens.
+- Accuracy target: the subject asks for 90%+ function and argument accuracy.
+  The name and type constraints improve reliability compared with prompt-only
+  JSON generation, while the final quality still depends on the small model
+  logits.
+- Speed: prompts are processed sequentially. The model is only called where
+  the output genuinely branches — structural JSON tokens and forced name
+  tokens are appended without a forward pass.
 
 ## Challenges Faced & Solutions
 
 - Small models often produce invalid JSON when prompted normally. The solution is
   to never ask the model to freely write the final object.
-- Tokenizers can split words and punctuation in surprising ways. The trie is
-  built with the SDK's own `encode` method so the allowed paths match the model
-  vocabulary.
+- Tokenizers can split words and punctuation in surprising ways. The allowed
+  name paths are built with the SDK's own `encode` method so they match the
+  model vocabulary exactly.
 - Input files may be missing or malformed. Parsing code catches JSON errors and
   validation errors and turns them into readable messages.
 

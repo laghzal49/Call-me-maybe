@@ -47,7 +47,7 @@ def allowed_set(text: str, has_digit: bool, has_dot: bool, integer_only: bool) -
 
 def simulate_number(token_sequence: list, integer_only: bool = False) -> float:
     """
-    Simulate _number() with a pre-scripted token sequence.
+    Simulate gen_number() with a pre-scripted token sequence.
     Each entry: (token_id, is_end_token)
     """
     text = ""

@@ -45,7 +45,7 @@ flowchart TD
 1. **Parse inputs** — `parse_prompts` + `parse_functions`. On `ValueError`, print
    it and `sys.exit(1)`.
 2. **Load model & decoder** — `Decoder(Small_LLM_Model(), functions)` builds the
-   vocab token sets, tries, and functions block once. On
+   vocab token groups once. On
    `OSError`/`ValueError`/`RuntimeError`, print a clear message and exit.
 3. **Generate per prompt** — for each prompt: `decoder.run(prompt)`, then
    `validate_result`, then append. A `ValueError`/`KeyError` on one prompt is

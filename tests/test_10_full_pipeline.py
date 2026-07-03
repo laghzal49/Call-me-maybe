@@ -11,24 +11,24 @@ PIPELINE DIAGRAM:
                      encode(prompt)
                            │  token ids
                     ┌──────▼──────┐
-                    │  fn_trie    │  CONCEPT 4+9: trie walk over fn names
-                    │   walk      │  CONCEPT 3: _pick() at branch points
+                    │  choose()   │  CONCEPT 9: pick among fn-name token paths
+                    │  over names │  CONCEPT 3: pick() where paths diverge
                     └──────┬──────┘
                      function name
                            │
-               ┌───────────▼────────────┐
-               │  per-parameter decode  │
-               │  ├── string:  _string() │  CONCEPT 6: quote race
-               │  ├── boolean: trie walk │  CONCEPT 8
-               │  └── number:  _number() │  CONCEPT 7: digit accumulation
-               └───────────┬────────────┘
+               ┌───────────▼──────────────┐
+               │  per-parameter decode    │
+               │  ├── string:  gen_string()│  CONCEPT 6: quote race
+               │  ├── boolean: choose()    │  CONCEPT 8
+               │  └── number:  gen_number()│  CONCEPT 7: digit accumulation
+               └───────────┬──────────────┘
                            │
                       validate_result      (check schema correctness)
                            │
                        {"name": ..., "parameters": {...}}
 
 WHAT THE MODEL DOES:
-  - Provides logits at every branching point (trie) or every token (strings/numbers)
+  - Provides logits where names diverge and at every token of strings/numbers
   - Its logits encode which function name fits the prompt
   - Its logits encode what value fits each parameter
 
@@ -51,7 +51,7 @@ from src.output import validate_result  # noqa: E402
 
 # ── 1. setup (done ONCE, not per prompt) ─────────────────────────────────────
 # This mirrors __main__.py.
-# Decoder.__init__ loads vocab, builds tries and token sets.
+# Decoder.__init__ loads the vocab and groups the token ids.
 
 llm = Small_LLM_Model()
 functions = parse_functions("data/input/functions_definition.json")
@@ -64,7 +64,7 @@ for name, fn in functions.items():
 
 # ── 2. run a few prompts through the pipeline ─────────────────────────────────
 # Each call to decoder.run() generates one JSON object.
-# The model picks the function; the trie + constraints produce valid JSON.
+# The model picks the function; the constraints produce valid JSON.
 
 test_cases = [
     "What is the sum of 10 and 5?",
@@ -98,57 +98,54 @@ print("=" * 70)
 print("""
 1. VOCAB (test_05)
    vocab = json.load(open(llm.get_path_to_vocab_file()))
-   digit_ids   = {i for t,i in vocab.items() if t and all(c.isdigit() for c in t)}
-   dot_id      = vocab.get(".", -1)
-   minus_id    = vocab.get("-", -1)
-   quote_ids   = {i for t,i in vocab.items() if '"' in t}
-   end_ids     = {encode_ids(llm, c)[0] for c in (",","}"," ")}
+   digit_ids   = [i for t,i in vocab.items() if t.isdigit()]
+   quote_ids   = [i for t,i in vocab.items() if '"' in t]
+   plain_ids   = [i for t,i in vocab.items() if '"' not in t]
+   dot_id      = vocab.get(".")
+   minus_id    = vocab.get("-")
+   end_ids     = [encode(c)[0] for c in (",", "}", " ", "\\n")]
 
-2. TRIE (test_04)
-   insert(token_id_list, word_value) into a tree of TrieNode
-   from_strings(llm, words) = encode each word, then insert
-
-3. _pick(lg, allowed) (test_03)
-   masked = np.full(len(lg), -inf)
-   masked[list(allowed)] = lg[list(allowed)]
+2. pick(allowed) (test_03)
+   logits = model(ids)
+   masked = np.full(len(logits), -inf)
+   masked[allowed] = logits[allowed]
    return int(np.argmax(masked))
 
-4. _walk(trie_root) (test_04, test_09)
-   while node.children:
-       if 1 child: forced — take it
-       else:       _pick(logits(), node.children.keys())
-   return node.value
+3. choose(options) (test_08, test_09)
+   paths = {option: encode(option) for option in options}
+   while more than one option remains:
+       allowed = next token ids of the remaining options
+       token = forced if 1 allowed, else pick(allowed)
+       drop options that don't match; append token
+   append the winner's leftover tokens; return it
 
-5. _string() (test_06)
+4. gen_string() (test_06)
    loop:
-       lg = logits()
-       close = _pick(lg, quote_ids)
-       close_val = float(lg[close])   # BEFORE masking
-       lg[list(quote_ids)] = -inf
-       best = argmax(lg)
-       if close_val >= lg[best]: salvage prefix before "; break
-       else: append best token
+       logits = model(ids)
+       closing = best token containing '"'
+       content = best token without '"'
+       if closing wins: keep any text before the quote; break
+       else: append content token
 
-6. _number(integer_only) (test_07)
+5. gen_number(integer_only) (test_07)
    loop:
        allowed = digit_ids
-       if not text: add minus_id
-       if has_digit and not has_dot and not integer_only: add dot_id
-       if has_digit: add end_ids
-       tok = _pick(logits(), allowed)
-       if tok in end_ids: break
-       append tok
+       if no text yet: add minus_id
+       if a digit was seen: add end_ids (+ dot_id once, floats only)
+       token = pick(allowed)
+       if token in end_ids: break
+       append token
 
-7. run(prompt) — puts it all together
+6. run(prompt) — puts it all together
    ids = encode(header + '{"name": "')
-   name = _walk(fn_trie)
-   emit('"name": "' + name + '", "parameters": {')
+   name = choose(function names)
+   add('", "parameters": {')
    for key, schema in function.parameters:
-       emit('"' + key + '": ')
-       if string:  emit('"'); value = _string(); emit('"')
-       if boolean: value = _walk(bool_trie) == "true"
-       if number:  value = _number(integer_only=schema.type=="integer")
-       if not last: emit(", ")
-   emit("}}")
-   return {"prompt": prompt, "name": name, "parameters": params}
+       add('"key": ')
+       if string:  add('"'); value = gen_string(); add('"')
+       if boolean: value = choose(["true", "false"]) == "true"
+       if number:  value = gen_number(integer_only=schema.type=="integer")
+       if not last: add(", ")
+   add("}}")
+   return {"prompt": prompt, "name": name, "parameters": parameters}
 """)

@@ -8,7 +8,7 @@ The model only generates the content tokens — but under a constraint:
 at every step we compare the best content token against the best closing
 token.  When the closing token wins the logit comparison, we stop.
 
-Algorithm (_string in decoder.py):
+Algorithm (gen_string in decoder.py):
   loop:
     lg = model logits for current sequence
     close = _pick(lg, quote_ids)       # best token CONTAINING "
@@ -41,12 +41,12 @@ token_text = {
 
 quote_ids = {i for i, t in token_text.items() if '"' in t}   # {2, 3, 4}
 
-# ── helper: the _string() logic in isolation ─────────────────────────────────
+# ── helper: the gen_string() logic in isolation ─────────────────────────────────
 
 
 def decode_string(steps: list) -> str:
     """
-    Simulate _string() with pre-scripted logit arrays.
+    Simulate gen_string() with pre-scripted logit arrays.
     steps = list of np.array, one per generation step.
     Returns the decoded string content (without surrounding quotes).
     """

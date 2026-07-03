@@ -55,7 +55,6 @@ def validate_result(
 
     for key, schema in function.parameters.items():
         value = checked.parameters[key]
-        # bool is a subclass of int, so True would pass as a number otherwise
         if isinstance(value, bool) and schema.type != "boolean":
             raise ValueError(f"{checked.name}.{key}: expected {schema.type}")
         if not isinstance(value, _PYTHON_TYPES[schema.type]):
