@@ -1,14 +1,3 @@
-"""Load and validate the two input JSON files using pydantic models.
-
-Two files are parsed:
-  functions_definition.json — the functions the model can call.
-  function_calling_tests.json — the natural-language prompts to process.
-
-Pydantic checks the JSON syntax, the top-level array shape, and the field
-types. Any mismatch raises ValidationError, which we convert to a plain
-ValueError so the caller gets a clean error message.
-"""
-
 from typing import Dict, List, Literal
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -57,7 +46,8 @@ def parse_prompts(path: str) -> List[Prompt]:
     try:
         return _PROMPTS.validate_json(raw)
     except ValidationError as error:
-        raise ValueError(f"Error: invalid prompts in {path}: {error}") from error
+        raise ValueError(
+            f"Error: invalid prompts in {path}: {error}") from error
 
 
 def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
@@ -78,6 +68,7 @@ def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
     functions: Dict[str, FunctionDefinition] = {}
     for function in definitions:
         if function.name in functions:
-            raise ValueError(f"Error: duplicate function name: {function.name}")
+            raise ValueError(
+                f"Error: duplicate function name: {function.name}")
         functions[function.name] = function
     return functions

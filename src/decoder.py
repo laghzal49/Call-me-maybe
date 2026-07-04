@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 import numpy as np
 
 from llm_sdk import Small_LLM_Model
-
 from src.parsing import FunctionDefinition
 
 JsonObject = Dict[str, Any]
@@ -30,7 +29,8 @@ class Decoder:
             with open(llm.get_path_to_vocab_file(), encoding="utf-8") as file:
                 vocab: Dict[str, int] = json.load(file)
         except OSError as error:
-            raise ValueError(f"Error: cannot read vocab file: {error}") from error
+            raise ValueError(
+                f"Error: cannot read vocab file: {error}") from error
         except json.JSONDecodeError as error:
             raise ValueError(f"Error: invalid vocab JSON: {error}") from error
         self.digit_ids = [i for tok, i in vocab.items() if tok.isdigit()]
@@ -104,7 +104,8 @@ class Decoder:
                 allowed.append(self.minus_id)
             if any(char.isdigit() for char in text):
                 allowed += self.end_ids
-                if not integer_only and "." not in text and self.dot_id is not None:
+                if not integer_only and "." not \
+                        in text and self.dot_id is not None:
                     allowed.append(self.dot_id)
             token = self.pick(allowed)
             if token in self.end_ids:

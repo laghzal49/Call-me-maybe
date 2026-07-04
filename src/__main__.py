@@ -1,12 +1,12 @@
 import argparse
+import json
+import os
 import sys
 import time
 from typing import List
 
 from llm_sdk import Small_LLM_Model
-
 from src.decoder import Decoder, JsonObject
-from src.output import validate_result, write_results
 from src.parsing import parse_functions, parse_prompts
 
 DEFAULT_FUNCTIONS = "data/input/functions_definition.json"
@@ -14,9 +14,20 @@ DEFAULT_INPUT = "data/input/function_calling_tests.json"
 DEFAULT_OUTPUT = "data/output/function_calling_results.json"
 
 
+def write_results(path: str, results: List[JsonObject]) -> None:
+    """Write the results list as pretty-printed JSON."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(results, file, indent=2)
+        file.write("\n")
+
+
 def parse_args() -> argparse.Namespace:
     """Parse the three optional path arguments."""
-    parser = argparse.ArgumentParser(description="Call Me Maybe — function calling")
+    parser = argparse.ArgumentParser(
+        description="Call Me Maybe — function calling")
     parser.add_argument("--functions_definition", default=DEFAULT_FUNCTIONS)
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
@@ -24,7 +35,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Run the pipeline: parse → load model → decode → validate → write."""
+    """Run the pipeline: parse → load model → decode → write."""
     args = parse_args()
     start = time.time()
     try:
@@ -46,7 +57,6 @@ def main() -> None:
         try:
             print(f"  [{i}/{len(prompts)}] {item.prompt!r}")
             result = decoder.run(item.prompt)
-            validate_result(result, functions)
             results.append(result)
         except (ValueError, KeyError) as error:
             print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
@@ -66,3 +76,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("KeyboardInterrupt ;)")
+    except Exception as e:
+        print(e)

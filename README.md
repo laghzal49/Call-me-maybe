@@ -29,7 +29,7 @@ flowchart LR
     TI[function_calling_tests.json] --> P
     P --> D["Decoder setup (once)<br/>vocab token groups"]
     D --> R["Decoder.run(prompt)<br/>name-constrained choice +<br/>type-constrained values"]
-    R --> V["output.py<br/>schema validation"]
+    R --> V["__main__.py<br/>JSON writing"]
     V --> O[function_calling_results.json]
 ```
 
@@ -133,7 +133,7 @@ does not choose functions with keyword rules or hardcoded examples.
 - Pydantic is used for all project classes that hold structured data.
 - The code is split by responsibility:
   - `decoder.py` — `Decoder` class: the whole constrained generation loop.
-  - `parsing.py` / `output.py` — I/O and schema validation.
+  - `parsing.py` — input loading and pydantic schema validation.
 - The `Decoder` is created once per run (vocabulary token groups are built in
   `__init__`) and `run(prompt)` is called for each prompt.
 - Simplicity over micro-optimization: there is a single generic constrained
@@ -150,10 +150,9 @@ does not choose functions with keyword rules or hardcoded examples.
 
 ```
 src/
-├── __main__.py   — CLI entry point and orchestration
+├── __main__.py   — CLI entry point, orchestration, and JSON file writing
 ├── parsing.py    — pydantic models + JSON input loading
-├── decoder.py    — Decoder class: constrained token-by-token generation
-└── output.py     — schema validation + JSON file writing
+└── decoder.py    — Decoder class: constrained token-by-token generation
 ```
 
 ## Performance Analysis
