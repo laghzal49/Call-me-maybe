@@ -1,4 +1,4 @@
-CACHE_DIR = goinfre/
+CACHE_DIR = goinfre
 SRC_DIR = src
 UV_ENV = UV_CACHE_DIR="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
 HF_ENV = HF_HOME="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
@@ -16,7 +16,13 @@ debug:
 
 clean:
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
-	@rm -rf .mypy_cache
+	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	@rm -rf data/output
+
+fclean:
+	@find . -type d -name "__pycache__" -exec rm -rf {} +
+	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	@rm -rf .venv
 
 lint:
 	@$(UV_ENV) uv run flake8 .

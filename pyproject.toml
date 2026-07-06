@@ -5,20 +5,14 @@ description = "Call Me Maybe LLM Engine"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "llm-sdk",
     "numpy>=1.22.0",
     "pydantic>=2.0",
     "mypy>=1.0.0",
     "flake8>=6.0.0",
+    "torch>=2.0.0",
+    "transformers>=4.40.0",
+    "huggingface-hub>=0.20.0",
 ]
-
-[tool.uv.workspace]
-members = [
-    "llm_sdk",
-]
-
-[tool.uv.sources]
-llm-sdk = { workspace = true }
 
 [tool.mypy]
 mypy_path = "llm_sdk"

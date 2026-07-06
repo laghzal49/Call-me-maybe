@@ -6,7 +6,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 class TypeSchema(BaseModel):
     """The declared type of one parameter or return value."""
 
-    type: Literal["number", "integer", "string", "boolean"]
+    type: Literal["number", "integer", "string", "boolean", "null"]
     optional: bool = False
 
 
@@ -47,7 +47,8 @@ def parse_prompts(path: str) -> List[Prompt]:
         return _PROMPTS.validate_json(raw)
     except ValidationError as error:
         raise ValueError(
-            f"Error: invalid prompts in {path}: {error}") from error
+            f"Error: invalid prompts in {path}: {error}"
+        ) from error
 
 
 def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
@@ -69,6 +70,7 @@ def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
     for function in definitions:
         if function.name in functions:
             raise ValueError(
-                f"Error: duplicate function name: {function.name}")
+                f"Error: duplicate function name: {function.name}"
+            )
         functions[function.name] = function
     return functions
