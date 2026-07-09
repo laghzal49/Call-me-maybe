@@ -15,7 +15,6 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
-
 # Project
 data/output/
 *.log

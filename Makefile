@@ -1,7 +1,10 @@
-CACHE_DIR = goinfre
 SRC_DIR = src
-UV_ENV = UV_CACHE_DIR="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
-HF_ENV = HF_HOME="$(HOME)/$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(HOME)/$(CACHE_DIR)/.venv"
+
+# Use 42's per-user /goinfre cache when available (bigger quota than $HOME);
+# fall back to a plain home cache dir on any other machine.
+CACHE_DIR := $(if $(wildcard /goinfre/.),/goinfre/$(USER),$(HOME)/.cache/call-me-maybe)
+UV_ENV = UV_CACHE_DIR="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
+HF_ENV = HF_HOME="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
 
 all: install run
 
@@ -22,6 +25,7 @@ clean:
 fclean:
 	@find . -type d -name "__pycache__" -exec rm -rf {} +
 	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
+	@rm -rf data/output
 	@rm -rf .venv
 
 lint:

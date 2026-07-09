@@ -9,6 +9,8 @@ from llm_sdk import Small_LLM_Model
 from src.decoder import Decoder, JsonObject
 from src.parsing import parse_functions, parse_prompts
 
+MODEL_CHOICES = ["Qwen/Qwen3-0.6B", "Qwen/Qwen2.5-0.5B-Instruct"]
+DEFAULT_MODEL = MODEL_CHOICES[0]
 DEFAULT_FUNCTIONS = "data/input/functions_definition.json"
 DEFAULT_INPUT = "data/input/function_calling_tests.json"
 DEFAULT_OUTPUT = "data/output/function_calling_results.json"
@@ -25,17 +27,28 @@ def write_results(path: str, results: List[JsonObject]) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse the three optional path arguments."""
+    """Parse the CLI arguments."""
     parser = argparse.ArgumentParser(
         description="Call Me Maybe — function calling")
     parser.add_argument("--functions_definition", default=DEFAULT_FUNCTIONS)
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print each generation step to stderr (bonus).",
+    )
+    parser.add_argument(
+        "--model",
+        choices=MODEL_CHOICES,
+        default=DEFAULT_MODEL,
+        help=f"Model to use (bonus, default: {DEFAULT_MODEL}).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
-    """Run the pipeline: parse → load model → decode → write."""
+    """Run the pipeline: parse -> load model -> decode -> write."""
     args = parse_args()
     start = time.time()
     try:
@@ -46,19 +59,24 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        decoder = Decoder(Small_LLM_Model(), functions)
-    except (OSError, ValueError, RuntimeError) as error:
-        print(f"Error: failed to initialize: {error}", file=sys.stderr)
+        llm = Small_LLM_Model(model_name=args.model)
+        decoder = Decoder(llm, functions, verbose=args.verbose)
+    except Exception as error:
+        print(
+            f"Error: failed to initialize model {args.model!r}: {error}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     results: List[JsonObject] = []
+    print(f"[*] Model: {args.model}")
     print(f"[*] Processing {len(prompts)} prompts...")
     for i, item in enumerate(prompts, 1):
         try:
             print(f"  [{i}/{len(prompts)}] {item.prompt!r}")
             result = decoder.run(item.prompt)
             results.append(result)
-        except (ValueError, KeyError) as error:
+        except Exception as error:
             print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
 
     try:
@@ -76,5 +94,10 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("KeyboardInterrupt ;)")
-    except Exception as e:
-        print(e)
+        sys.exit(130)
+    except ImportError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as error:
+        print(f"Error: unexpected failure: {error}", file=sys.stderr)
+        sys.exit(1)

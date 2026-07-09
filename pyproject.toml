@@ -14,6 +14,19 @@ dependencies = [
     "huggingface-hub>=0.20.0",
 ]
 
+[tool.uv.sources]
+# CPU-only wheel: this machine has no NVIDIA GPU/driver, and the default
+# PyPI torch wheel bundles CUDA runtime libs that it preloads at import
+# time (ctypes.CDLL on multi-hundred-MB .so files), which can take tens of
+# seconds on a cold disk cache and looks like a hang. The CPU wheel skips
+# that entirely.
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.mypy]
 mypy_path = "llm_sdk"
 exclude = [
