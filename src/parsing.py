@@ -17,7 +17,8 @@ class Prompt(BaseModel):
 
 
 class FunctionDefinition(BaseModel):
-    """One callable function: its name, parameter types, and return type."""
+    """One callable function: its name, parameter types, and return
+    type."""
 
     name: str
     description: str
@@ -37,7 +38,9 @@ def _read_text(path: str) -> str:
     except FileNotFoundError as error:
         raise ValueError(f"Error: file not found: {path}") from error
     except OSError as error:
-        raise ValueError(f"Error: cannot read {path}: {error}") from error
+        raise ValueError(
+            f"Error: cannot read {path}: {error}"
+        ) from error
 
 
 def parse_prompts(path: str) -> List[Prompt]:
@@ -54,7 +57,8 @@ def parse_prompts(path: str) -> List[Prompt]:
 def parse_functions(path: str) -> Dict[str, FunctionDefinition]:
     """Load and validate function definitions from a JSON file.
 
-    Returns a dict keyed by function name for O(1) lookup during generation.
+    Returns a dict keyed by function name for O(1) lookup during
+    generation.
     """
     raw = _read_text(path)
     try:

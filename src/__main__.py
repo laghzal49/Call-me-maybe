@@ -29,8 +29,11 @@ def write_results(path: str, results: List[JsonObject]) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse the CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Call Me Maybe — function calling")
-    parser.add_argument("--functions_definition", default=DEFAULT_FUNCTIONS)
+        description="Call Me Maybe — function calling"
+    )
+    parser.add_argument(
+        "--functions_definition", default=DEFAULT_FUNCTIONS
+    )
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
@@ -63,7 +66,8 @@ def main() -> None:
         decoder = Decoder(llm, functions, verbose=args.verbose)
     except Exception as error:
         print(
-            f"Error: failed to initialize model {args.model!r}: {error}",
+            f"Error: failed to initialize model "
+            f"{args.model!r}: {error}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -77,27 +81,34 @@ def main() -> None:
             result = decoder.run(item.prompt)
             results.append(result)
         except Exception as error:
-            print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
+            print(
+                f"Error on {item.prompt!r}: {error}", file=sys.stderr
+            )
 
     try:
         write_results(args.output, results)
     except OSError as error:
-        print(f"Error: cannot write {args.output}: {error}", file=sys.stderr)
+        print(
+            f"Error: cannot write {args.output}: {error}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     elapsed = time.time() - start
-    print(f"[*] Done: {len(results)}/{len(prompts)} in {elapsed:.1f}s")
+    print(
+        f"[*] Done: {len(results)}/{len(prompts)} in {elapsed:.1f}s"
+    )
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("KeyboardInterrupt ;)")
-        sys.exit(130)
+        print("KeyboardInterrupt ;)", flush=True)
+        os._exit(130)
     except ImportError as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
-    except Exception as error:
+    except (Exception, BaseException) as error:
         print(f"Error: unexpected failure: {error}", file=sys.stderr)
         sys.exit(1)

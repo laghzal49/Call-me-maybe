@@ -25,32 +25,37 @@ class Decoder:
         verbose: bool = False,
     ) -> None:
         """Build the vocab wrapper and validate the function set."""
-        self.llm = llm
-        self.functions = functions
-        self.verbose = verbose
-        self.vocab = Vocab(llm)
+        self.llm: Small_LLM_Model = llm
+        self.functions: Dict[str, FunctionDefinition] = functions
+        self.verbose: bool = verbose
+        self.vocab: Vocab = Vocab(llm)
         self._check_name_collisions()
-        self.block = "\n".join(
+        self.block: str = "\n".join(
             "- {}({}): {}".format(
                 fn.name,
-                ", ".join(f"{k}: {v.type}" for k, v in fn.parameters.items()),
+                ", ".join(
+                    f"{k}: {v.type}" for k, v in fn.parameters.items()
+                ),
                 fn.description,
             )
             for fn in self.functions.values()
         )
 
     def _check_name_collisions(self) -> None:
-        """Reject names whose token encoding is a strict prefix of another's,
-        since `choose()` can't tell those apart."""
-        encoded = {name: self.vocab.encode(name) for name in self.functions}
+        """Reject names whose token encoding is a strict prefix of
+        another's, since `choose()` can't tell those apart."""
+        encoded = {
+            name: self.vocab.encode(name) for name in self.functions
+        }
         for name, tokens in encoded.items():
             for other, other_tokens in encoded.items():
                 if name == other:
                     continue
                 if other_tokens[: len(tokens)] == tokens:
                     raise ValueError(
-                        f"Error: function name {name!r} is a token prefix "
-                        f"of {other!r}; rename one of them"
+                        f"Error: function name {name!r} is a "
+                        f"token prefix of {other!r}; "
+                        f"rename one of them"
                     )
 
     def add(self, text: str) -> None:
@@ -58,14 +63,17 @@ class Decoder:
         self.ids += self.vocab.encode(text)
 
     def pick(self, allowed: List[int]) -> int:
-        """One constrained decoding step: fetch logits, mask every token
-        outside `allowed` to -inf, and return the argmax."""
-        logits = np.array(self.llm.get_logits_from_input_ids(self.ids))
+        """One constrained decoding step: fetch logits, mask every
+        token outside `allowed` to -inf, and return the argmax."""
+        logits = np.array(
+            self.llm.get_logits_from_input_ids(self.ids)
+        )
         masked = np.full(len(logits), -np.inf)
         masked[allowed] = logits[allowed]
         token = int(np.argmax(masked))
         self.log(
-            f"pick: {len(allowed)} allowed token(s) -> chose id {token} "
+            f"pick: {len(allowed)} allowed token(s) -> "
+            f"chose id {token} "
             f"({self.vocab.decode([token])!r})"
         )
         return token
@@ -73,11 +81,14 @@ class Decoder:
     def choose(self, options: List[str]) -> str:
         """Let the model pick one of `options` (e.g. a function name).
 
-        Every option is encoded into a token trie; at each step only the
-        tokens that continue at least one still-possible option are allowed.
+        Every option is encoded into a token trie; at each step only
+        the tokens that continue at least one still-possible option
+        are allowed.
         """
         if not options:
-            raise ValueError("Error: choose() needs at least one option")
+            raise ValueError(
+                "Error: choose() needs at least one option"
+            )
 
         trie = Trie()
         for option in options:
@@ -91,23 +102,31 @@ class Decoder:
                     "Error: constrained decoding reached a dead end "
                     f"(no valid continuation among {options!r})"
                 )
-            token = allowed[0] if len(allowed) == 1 else self.pick(allowed)
+            token = (
+                allowed[0]
+                if len(allowed) == 1
+                else self.pick(allowed)
+            )
             self.ids.append(token)
             node = node.children[token]
         return node.value
 
     def _emit(self, token: int) -> str:
-        """Append one accepted token id and return its decoded text."""
+        """Append one accepted token id and return its decoded
+        text."""
         self.ids.append(token)
         text = self.vocab.decode([token])
         self.log(f"emit: id {token} decodes to {text!r}")
         return text
 
     def gen_string(self) -> str:
-        """Generate a string; pick() over the full vocab stops on a quote."""
+        """Generate a string; pick() over the full vocab stops on a
+        quote."""
         text = ""
         for _ in range(MAX_STRING_TOKENS):
-            token = self.pick(self.vocab.quote_ids + self.vocab.plain_ids)
+            token = self.pick(
+                self.vocab.quote_ids + self.vocab.plain_ids
+            )
             if token in self.vocab.quote_ids:
                 self.log("stop string: closing quote won")
                 head = self.vocab.decode([token]).split('"')[0]
@@ -145,7 +164,8 @@ class Decoder:
         return int(text) if integer_only else float(text)
 
     def gen_value(self, schema: TypeSchema) -> Any:
-        """Dispatch to the right constrained generator for `schema.type`."""
+        """Dispatch to the right constrained generator for
+        `schema.type`."""
         if schema.type == "string":
             self.add('"')
             value = self.gen_string()
@@ -184,4 +204,8 @@ class Decoder:
                 self.add(", ")
         self.add("}}")
 
-        return {"prompt": prompt, "name": name, "parameters": parameters}
+        return {
+            "prompt": prompt,
+            "name": name,
+            "parameters": parameters,
+        }

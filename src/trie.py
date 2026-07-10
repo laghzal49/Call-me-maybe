@@ -2,7 +2,8 @@ from typing import Dict, List, Optional
 
 
 class TrieNode:
-    """One node of a token trie: children keyed by token id, plus a value."""
+    """One node of a token trie: children keyed by token id, plus a
+    value."""
 
     def __init__(self) -> None:
         self.children: Dict[int, "TrieNode"] = {}
