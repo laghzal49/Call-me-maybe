@@ -5,6 +5,5 @@ exclude =
     llm_sdk,
     __pycache__,
     .mypy_cache,
-    Call-me-maybe,
     moulinette,
-    present-me-maybe
+
