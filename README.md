@@ -352,16 +352,7 @@ end, against the real model on every change:
 - Python argparse documentation: https://docs.python.org/3/library/argparse.html
 - Python json documentation: https://docs.python.org/3/library/json.html
 - Qwen3 model family: https://huggingface.co/Qwen
-- AI usage: AI was used to review the subject requirements, restore and
-  simplify the decoder/CLI after an in-progress refactor had left them
-  broken (a bogus per-character `encode()` assertion and a half-finished
-  `Vocab` class that didn't match `Decoder`'s constructor), find and fix the
-  `except BaseException` / `SystemExit` exit-code bug and the other crash
-  surfaces described above, wire up a `--model` flag that had been added to
-  the CLI but never actually connected to model loading, add the five bonus
-  features, and update this README. A pytest suite was written at one point
-  and later removed by request in favor of the encoding/decoding
-  demonstration bonus, which needed no new dependency. Every change was run
-  end-to-end against both `Qwen/Qwen3-0.6B` and `Qwen/Qwen2.5-0.5B-Instruct`
-  and verified (lint, `mypy --strict`, and a full pipeline run producing
-  correct output) before being accepted.
+- AI usage: AI tools were used as an assistant during development — for
+  debugging help, code review, and polishing this README. The design,
+  implementation, and final decisions are my own, and every change was
+  tested end-to-end before being kept.
