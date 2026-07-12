@@ -1,73 +1,95 @@
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 from llm_sdk import Small_LLM_Model
 
 
-class Vocab:
+def _load_vocab(path: str) -> Dict[str, int]:
+    """Load the token->id mapping from the model's vocab file."""
+    try:
+        with open(path, encoding="utf-8") as file:
+            vocab = json.load(file)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Error: invalid vocab JSON: {error}"
+        ) from error
+    except Exception as error:
+        raise ValueError(
+            f"Error: cannot load vocab file: {error}"
+        ) from error
+
+    if not isinstance(vocab, dict) or not vocab:
+        raise ValueError(
+            "Error: vocab file must contain a non-empty "
+            "token->id object"
+        )
+    return vocab
+
+
+class Vocab(BaseModel):
     """Wraps the model's tokenizer: encode/decode (with caching) plus
     the token-id groups derived from the vocab file, used to mask
     logits during constrained decoding."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    llm: Small_LLM_Model
+    digit_ids: List[int]
+    quote_ids: List[int]
+    plain_ids: List[int]
+    end_ids: List[int]
+    dot_id: Optional[int] = None
+    minus_id: Optional[int] = None
+
+    _encode_cache: Dict[str, List[int]] = PrivateAttr(
+        default_factory=dict
+    )
+
     def __init__(self, llm: Small_LLM_Model) -> None:
-        self.llm = llm
-        self._encode_cache: Dict[str, List[int]] = {}
+        """Load the vocab file, derive the token-id groups, and let
+        pydantic validate them."""
+        vocab = _load_vocab(llm.get_path_to_vocab_file())
 
-        path = llm.get_path_to_vocab_file()
-        try:
-            with open(path, encoding="utf-8") as file:
-                vocab = json.load(file)
-        except json.JSONDecodeError as error:
-            raise ValueError(
-                f"Error: invalid vocab JSON: {error}"
-            ) from error
-        except Exception as error:
-            raise ValueError(
-                f"Error: cannot load vocab file: {error}"
-            ) from error
-
-        if not isinstance(vocab, dict) or not vocab:
-            raise ValueError(
-                "Error: vocab file must contain a non-empty "
-                "token->id object"
-            )
-
-        self.digit_ids = [
+        digit_ids = [
             i for tok, i in vocab.items() if tok.isdigit()
         ]
-        self.quote_ids = [i for tok, i in vocab.items() if '"' in tok]
-        self.plain_ids = [
+        quote_ids = [i for tok, i in vocab.items() if '"' in tok]
+        plain_ids = [
             i for tok, i in vocab.items() if '"' not in tok
         ]
-        self.dot_id = vocab.get(".")
-        self.minus_id = vocab.get("-")
-        if not self.digit_ids:
+        if not digit_ids:
             raise ValueError("Error: vocab has no digit tokens")
-        if not self.quote_ids:
+        if not quote_ids:
             raise ValueError(
                 "Error: vocab has no quote-bearing tokens"
             )
-        if not self.plain_ids:
+        if not plain_ids:
             raise ValueError("Error: vocab has no non-quote tokens")
 
-        self.end_ids = []
+        end_ids: List[int] = []
         for char in (",", "}", " ", "\n"):
-            encoded = self.encode(char)
+            encoded = llm.encode(char).tolist()[0]
             if not encoded:
                 raise ValueError(
                     f"Error: model tokenizer produced no token "
                     f"for {char!r}"
                 )
-            self.end_ids.append(encoded[0])
+            end_ids.append(encoded[0])
+
+        super().__init__(
+            llm=llm,
+            digit_ids=digit_ids,
+            quote_ids=quote_ids,
+            plain_ids=plain_ids,
+            end_ids=end_ids,
+            dot_id=vocab.get("."),
+            minus_id=vocab.get("-"),
+        )
 
     def encode(self, text: str) -> List[int]:
-        """Encode text to a flat list of token ids.
-
-        Fixed JSON literals (braces, commas, key names, function
-        names) repeat identically on every prompt, so results are
-        cached to avoid redundant tokenizer calls (bonus: performance
-        optimization).
-        """
+        """Encode text to a flat list of token ids."""
         cached = self._encode_cache.get(text)
         if cached is not None:
             return list(cached)

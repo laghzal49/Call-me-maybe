@@ -190,11 +190,9 @@ does not choose functions with keyword rules or hardcoded examples.
   project avoids.
 - `Vocab.__init__` validates the loaded vocabulary itself (must be a
   non-empty object, must contain digit/quote/plain tokens, must produce a
-  token for each fixed JSON separator), and `Decoder._check_name_collisions`
-  rejects function names whose token encoding is a strict prefix of
-  another's — turning several classes of silent wrong output or deep
-  crashes (empty-sequence `argmax`, `KeyError` on an untraversed trie
-  branch) into one clear startup error instead.
+  token for each fixed JSON separator) — turning several classes of deep
+  crashes (empty-sequence `argmax`, `AttributeError` on a malformed vocab
+  file) into one clear startup error instead.
 
 ## File Organization
 
@@ -225,7 +223,7 @@ Five bonus features are implemented and working (not just described):
    prints the chosen function name and every parameter value to stderr as
    soon as it is produced, so the token-by-token decision process is
    observable while it runs.
-3. **Performance optimization (caching)** — `Decoder.encode()` caches results
+3. **Performance optimization (caching)** — `Vocab.encode()` caches results
    per literal string. The fixed JSON scaffolding (`", "parameters": {`,
    key names, function names, `true`/`false`) is identical on every prompt,
    so re-encoding it on each of the N prompts is wasted tokenizer work;
@@ -237,16 +235,15 @@ Five bonus features are implemented and working (not just described):
    logged to stderr and skipped without stopping the batch; every I/O,
    parsing, model-initialization, and per-prompt generation failure is
    caught and reported with a clear message and a correct non-zero exit
-   code (see the `SystemExit` note above, and the vocab/name-collision
+   code (see the `SystemExit` note above, and the vocab validation
    checks in Design Decisions).
 5. **Demonstration of how encoding and decoding integrate with constrained
    decoding** — with `--verbose`, `pick()` logs how many token ids were
    `allowed` (built from `vocab.encode()`-derived groups), the raw
    `get_logits_from_input_ids` call, the masking, and the winning token id
    plus its `vocab.decode()`-ed text; `_emit()` logs the same decode step
-   for every accepted token; and `gen_string()`'s own inline
-   closing-quote-vs-content comparison logs which token would have
-   continued the string before it loses to the quote. Together these make
+   for every accepted token; and `gen_string()` logs when an unescaped
+   closing quote wins and ends the string. Together these make
    every step of encode → logits → mask → argmax → decode → append visible
    at runtime, not just described in prose. Example, generating
    `{"a": 2.0, ...}` for "What is the sum of 2 and 3?":
@@ -300,16 +297,16 @@ functions, CPU only):
   missing-file, malformed-JSON, and unknown-model error.
 - Input files may be missing or malformed. Parsing code catches JSON errors and
   validation errors and turns them into readable messages.
-- Several deeper crash surfaces were only reachable with an unusual vocab or
-  function set, not the provided example data: an empty `quote_ids`/
-  `plain_ids` list would make `np.argmax` raise on an empty sequence inside
-  `gen_string`; a non-dict or empty vocab file would raise `AttributeError`
-  instead of a clear message; and two function names where one is a token
-  prefix of the other (e.g. `fn_get` / `fn_get_all`) would make `choose()`
-  silently stop at the shorter name forever, since it exits as soon as it
-  reaches *any* complete option. All three are now checked explicitly in
-  `Decoder.__init__`/`choose()` and turned into a clear `ValueError` instead
-  of a crash or silent wrong answer.
+- Several deeper crash surfaces were only reachable with an unusual vocab,
+  not the provided example data: an empty `quote_ids`/`plain_ids` list
+  would make `np.argmax` raise on an empty sequence inside `gen_string`,
+  and a non-dict or empty vocab file would raise `AttributeError` instead
+  of a clear message. Both are now checked explicitly in `Vocab.__init__`
+  and turned into a clear `ValueError` instead of a crash. A known
+  limitation remains: if one function name's token encoding is a strict
+  prefix of another's (e.g. `fn_get` / `fn_get_all`), `choose()` stops at
+  the shorter name, since it exits as soon as it reaches a complete
+  option; the provided function set has no such pair.
 - In `gen_number`, the token that ends the loop (a comma, `}`, space, or
   newline) is only ever used as a stop *signal* — `if token in
   self.vocab.end_ids: break` happens before `_emit()` would append it. It is

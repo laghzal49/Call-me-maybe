@@ -1,21 +1,22 @@
 from typing import Dict, List, Optional
 
+from pydantic import BaseModel, Field
 
-class TrieNode:
+
+class TrieNode(BaseModel):
     """One node of a token trie: children keyed by token id, plus a
     value."""
 
-    def __init__(self) -> None:
-        self.children: Dict[int, "TrieNode"] = {}
-        self.value: Optional[str] = None
+    children: Dict[int, "TrieNode"] = Field(default_factory=dict)
+    value: Optional[str] = None
+    end: bool = False
 
 
-class Trie:
+class Trie(BaseModel):
     """A trie over token-id sequences, used to constrain decoding to a
     fixed set of options."""
 
-    def __init__(self) -> None:
-        self.root: TrieNode = TrieNode()
+    root: TrieNode = Field(default_factory=TrieNode)
 
     def insert(self, ids: List[int], value: str) -> None:
         """Insert one token-id path ending in `value`."""
@@ -25,3 +26,4 @@ class Trie:
                 node.children[token_id] = TrieNode()
             node = node.children[token_id]
         node.value = value
+        node.end = True
