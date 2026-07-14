@@ -1,3 +1,6 @@
+"""CLI entry point: parse inputs, load the model, run constrained
+decoding for every prompt, and write the results to JSON."""
+
 import argparse
 import json
 import os
@@ -18,15 +21,19 @@ DEFAULT_OUTPUT = "data/output/function_calling_results.json"
 
 
 def write_results(path: str, results: List[JsonObject]) -> None:
-    """Write the results list as pretty-printed JSON.
+    """Write the results as pretty-printed JSON.
+
+    Parent directories are created if needed.
 
     Args:
-        path: Destination file path; parent directories are created
-            if they do not exist.
-        results: List of function-call result objects to serialize.
+        path: Destination file path.
+        results: The generated function-call objects, in order.
 
     Returns:
         None.
+
+    Raises:
+        OSError: If the directory or file cannot be written.
     """
     directory = os.path.dirname(path)
     if directory:
@@ -39,19 +46,14 @@ def write_results(path: str, results: List[JsonObject]) -> None:
 def parse_args() -> argparse.Namespace:
     """Parse the CLI arguments.
 
-    Args:
-        None (reads from ``sys.argv`` via argparse).
-
     Returns:
-        The parsed arguments: ``functions_definition``, ``input``,
-        ``output``, ``verbose``, and ``model``.
+        The parsed namespace: functions_definition, input, output,
+        verbose, and model.
     """
     parser = argparse.ArgumentParser(
         description="Call Me Maybe — function calling"
     )
-    parser.add_argument(
-        "--functions_definition", default=DEFAULT_FUNCTIONS
-    )
+    parser.add_argument("--functions_definition", default=DEFAULT_FUNCTIONS)
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
     parser.add_argument(
@@ -71,16 +73,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the pipeline: parse -> load model -> decode -> write.
 
-    Reads prompts and function definitions from the paths given on
-    the CLI (or their defaults), loads the model, runs constrained
-    decoding for every prompt, and writes the collected results to
-    the output JSON file.
-
-    Args:
-        None (reads configuration from ``parse_args()``).
-
     Returns:
-        None. Exits the process with status 1 on a fatal error.
+        None. Exits the process with status 1 on a fatal error;
+        a failure on one prompt is logged and skipped instead.
     """
     args = parse_args()
     try:
@@ -90,17 +85,16 @@ def main() -> None:
         print(error, file=sys.stderr)
         sys.exit(1)
 
+    start = time.time()
     try:
         llm = Small_LLM_Model(model_name=args.model)
-        start = time.time()
         vocab = Vocab(llm)
         decoder = Decoder(
-            functions, vocab=vocab, verbose=args.verbose
+            functions=functions, vocab=vocab, verbose=args.verbose
         )
     except Exception as error:
         print(
-            f"Error: failed to initialize model "
-            f"{args.model!r}: {error}",
+            f"Error: failed to initialize model {args.model!r}: {error}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -111,26 +105,18 @@ def main() -> None:
     for i, item in enumerate(prompts, 1):
         try:
             print(f"  [{i}/{len(prompts)}] {item.prompt!r}")
-            result = decoder.run(item.prompt)
-            results.append(result)
+            results.append(decoder.run(item.prompt))
         except Exception as error:
-            print(
-                f"Error on {item.prompt!r}: {error}", file=sys.stderr
-            )
+            print(f"Error on {item.prompt!r}: {error}", file=sys.stderr)
 
     try:
         write_results(args.output, results)
     except OSError as error:
-        print(
-            f"Error: cannot write {args.output}: {error}",
-            file=sys.stderr,
-        )
+        print(f"Error: cannot write {args.output}: {error}", file=sys.stderr)
         sys.exit(1)
 
     elapsed = time.time() - start
-    print(
-        f"[*] Done: {len(results)}/{len(prompts)} in {elapsed:.1f}s"
-    )
+    print(f"[*] Done: {len(results)}/{len(prompts)} in {elapsed:.1f}s")
 
 
 if __name__ == "__main__":

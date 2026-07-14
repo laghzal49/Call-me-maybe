@@ -14,18 +14,20 @@ def _load_vocab(path: str) -> Dict[str, int]:
     """Load the token->id mapping from the model's vocab file.
 
     Args:
-        path: Path to the model's vocab JSON file.
+        path: Filesystem path to the model's vocab JSON file.
 
     Returns:
-        The token->id mapping.
+        The token->id mapping read from the file.
+
+    Raises:
+        ValueError: If the file cannot be read, is not valid JSON,
+            or does not contain a non-empty JSON object.
     """
     try:
         with open(path, encoding="utf-8") as file:
             vocab = json.load(file)
     except json.JSONDecodeError as error:
-        raise ValueError(
-            f"Error: invalid vocab JSON: {error}"
-        ) from error
+        raise ValueError(f"Error: invalid vocab JSON: {error}") from error
     except Exception as error:
         raise ValueError(
             f"Error: cannot load vocab file: {error}"
@@ -33,8 +35,7 @@ def _load_vocab(path: str) -> Dict[str, int]:
 
     if not isinstance(vocab, dict) or not vocab:
         raise ValueError(
-            "Error: vocab file must contain a non-empty "
-            "token->id object"
+            "Error: vocab file must contain a non-empty token->id object"
         )
     return vocab
 
@@ -52,8 +53,7 @@ class Vocab(BaseModel):
         end_ids: Token ids for the characters that legally end a
             number (",", "}", " ", "\\n").
         dot_id: Token id for "." if present in the vocab, else None.
-        minus_id: Token id for "-" if present in the vocab, else
-            None.
+        minus_id: Token id for "-" if present in the vocab, else None.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -66,35 +66,30 @@ class Vocab(BaseModel):
     dot_id: Optional[int] = None
     minus_id: Optional[int] = None
 
-    _encode_cache: Dict[str, List[int]] = PrivateAttr(
-        default_factory=dict
-    )
+    _encode_cache: Dict[str, List[int]] = PrivateAttr(default_factory=dict)
 
     def __init__(self, llm: Small_LLM_Model) -> None:
-        """Load the vocab file, derive the token-id groups, and let
-        pydantic validate them.
+        """Derive the token-id groups from the model's vocab file.
 
         Args:
-            llm: The model whose vocab file and tokenizer to wrap.
+            llm: The loaded model whose tokenizer and vocab file this
+                instance wraps.
 
-        Returns:
-            None.
+        Raises:
+            ValueError: If the vocab file is unusable, if it lacks
+                the digit/quote/plain tokens the decoder needs, or if
+                the tokenizer produces no token for one of the
+                number-ending characters.
         """
         vocab = _load_vocab(llm.get_path_to_vocab_file())
 
-        digit_ids = [
-            i for tok, i in vocab.items() if tok.isdigit()
-        ]
-        quote_ids = [i for tok, i in vocab.items() if '"' in tok]
-        plain_ids = [
-            i for tok, i in vocab.items() if '"' not in tok
-        ]
+        digit_ids = [i for token, i in vocab.items() if token.isdigit()]
+        quote_ids = [i for token, i in vocab.items() if '"' in token]
+        plain_ids = [i for token, i in vocab.items() if '"' not in token]
         if not digit_ids:
             raise ValueError("Error: vocab has no digit tokens")
         if not quote_ids:
-            raise ValueError(
-                "Error: vocab has no quote-bearing tokens"
-            )
+            raise ValueError("Error: vocab has no quote-bearing tokens")
         if not plain_ids:
             raise ValueError("Error: vocab has no non-quote tokens")
 
@@ -103,8 +98,7 @@ class Vocab(BaseModel):
             encoded = llm.encode(char).tolist()[0]
             if not encoded:
                 raise ValueError(
-                    f"Error: model tokenizer produced no token "
-                    f"for {char!r}"
+                    f"Error: model tokenizer produced no token for {char!r}"
                 )
             end_ids.append(encoded[0])
 
@@ -119,14 +113,13 @@ class Vocab(BaseModel):
         )
 
     def encode(self, text: str) -> List[int]:
-        """Encode text to a flat list of token ids.
+        """Encode text to token ids, caching per literal string.
 
         Args:
-            text: The text to tokenize. Repeated calls with the
-                same text are served from an internal cache.
+            text: The text to tokenize.
 
         Returns:
-            The list of token ids for `text`.
+            A new list of token ids (safe for the caller to mutate).
         """
         cached = self._encode_cache.get(text)
         if cached is not None:
@@ -136,7 +129,7 @@ class Vocab(BaseModel):
         return list(ids)
 
     def decode(self, ids: List[int]) -> str:
-        """Decode a list of token ids back to text.
+        """Decode token ids back to text.
 
         Args:
             ids: The token ids to decode.

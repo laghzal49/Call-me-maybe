@@ -23,14 +23,20 @@ the allowed function names and parameter value types.
 
 ## How It Works
 
-```mermaid
-flowchart LR
-    FD[functions_definition.json] --> P[parsing.py]
-    TI[function_calling_tests.json] --> P
-    P --> D["Decoder setup (once)<br/>vocab token groups"]
-    D --> R["Decoder.run(prompt)<br/>name-constrained choice +<br/>type-constrained values"]
-    R --> V["__main__.py<br/>JSON writing"]
-    V --> O[function_calling_results.json]
+```
+functions_definition.json + function_calling_tests.json
+        |
+        v
+parsing.py              (pydantic validation)
+        |
+        v
+Vocab + Decoder setup   (once: vocab token-id groups)
+        |
+        v
+Decoder.run(prompt)     (per prompt: name-constrained choice
+        |                + type-constrained parameter values)
+        v
+__main__.py             (JSON writing) --> function_calling_results.json
 ```
 
 At each generation step the model produces logits for every token in the
@@ -39,10 +45,10 @@ the argmax of what remains. JSON structure (braces, quotes, keys, commas) is
 never generated — it is written directly, and the model is only consulted where
 there is a real choice:
 
-```mermaid
-flowchart LR
-    L["LLM logits"] --> M["mask invalid<br/>tokens to -inf"] --> A[argmax] --> T[token]
-    T -->|append & repeat| L
+```
+LLM logits --> mask invalid tokens to -inf --> argmax --> token
+     ^                                                      |
+     +--------------------- append & repeat ----------------+
 ```
 
 - **Function name** — constrained to the token paths of the declared function
@@ -53,6 +59,8 @@ flowchart LR
   stopping is itself a constrained choice of an end token.
 - **String** — any token without a quote is content; generation stops when a
   quote-bearing token beats the best content token.
+- **Null** — written directly as the literal `null`; there is no real choice,
+  so the model is never consulted.
 
 ## Instructions
 
@@ -127,7 +135,7 @@ make clean
 The decoder follows the subject's mandatory constrained-decoding idea:
 
 1. The program loads and validates both input JSON files with pydantic models.
-2. `Decoder.__init__` reads the vocabulary file once and groups the token ids
+2. `Vocab.__init__` reads the vocabulary file once and groups the token ids
    needed by the constraints: digit tokens, tokens containing a quote, tokens
    without one, the dot, the minus sign, and the tokens allowed to end a
    number.
@@ -141,6 +149,8 @@ The decoder follows the subject's mandatory constrained-decoding idea:
    continue at least one still-possible name are allowed, following the trie
    down to a leaf.
 5. Boolean parameters reuse `choose()` over exactly `true` and `false`.
+   Null parameters are appended as the literal `null` with no model call,
+   so the generated context stays valid JSON.
 6. Number and integer parameters are constrained to tokens that keep a valid
    numeric prefix (optional leading minus, digits, at most one dot for
    floats). Stop tokens are only allowed after at least one digit.
@@ -164,9 +174,9 @@ does not choose functions with keyword rules or hardcoded examples.
     to pick between a fixed set of options (function names, booleans).
   - `parsing.py` — input loading and pydantic schema validation.
   - `__main__.py` — CLI entry point, orchestration, and JSON file writing.
-- The `Decoder` is created once per run (it builds a `Vocab` in `__init__`,
-  which does the vocab-file parsing/validation once) and `run(prompt)` is
-  called for each prompt.
+- The `Vocab` and the `Decoder` are each created once per run
+  (`Vocab.__init__` does the vocab-file parsing/validation once) and
+  `run(prompt)` is called for each prompt.
 - Simplicity over micro-optimization: there is a single generic constrained
   step (`pick`) and a small set of value generators on top of it
   (`gen_string`, `gen_number`), dispatched from one place (`gen_value`)
@@ -192,7 +202,9 @@ does not choose functions with keyword rules or hardcoded examples.
   non-empty object, must contain digit/quote/plain tokens, must produce a
   token for each fixed JSON separator) — turning several classes of deep
   crashes (empty-sequence `argmax`, `AttributeError` on a malformed vocab
-  file) into one clear startup error instead.
+  file) into one clear startup error instead. `pick()` also refuses an
+  empty allowed set: `np.argmax` over an all-`-inf` array would otherwise
+  silently return token 0 instead of failing loudly.
 
 ## File Organization
 
@@ -230,7 +242,10 @@ Five bonus features are implemented and working (not just described):
    caching removes that redundancy.
 4. **Advanced error recovery** — generation is bounded (`MAX_STRING_TOKENS`,
    `MAX_NUMBER_TOKENS`) so a stubborn model can never hang or corrupt the
-   JSON; a number with no digit falls back to `0` instead of raising; each
+   JSON; if the string budget runs out right after a lone backslash, the
+   escape is balanced so the closing quote cannot be escaped away and the
+   context stays a terminated JSON string; a number with no digit falls
+   back to `0` instead of raising; each
    prompt is processed independently in `__main__.py`, so one bad prompt is
    logged to stderr and skipped without stopping the batch; every I/O,
    parsing, model-initialization, and per-prompt generation failure is
@@ -302,11 +317,13 @@ functions, CPU only):
   would make `np.argmax` raise on an empty sequence inside `gen_string`,
   and a non-dict or empty vocab file would raise `AttributeError` instead
   of a clear message. Both are now checked explicitly in `Vocab.__init__`
-  and turned into a clear `ValueError` instead of a crash. A known
-  limitation remains: if one function name's token encoding is a strict
-  prefix of another's (e.g. `fn_get` / `fn_get_all`), `choose()` stops at
-  the shorter name, since it exits as soon as it reaches a complete
-  option; the provided function set has no such pair.
+  and turned into a clear `ValueError` instead of a crash. A trickier
+  variant: if one function name's token encoding is a strict prefix of
+  another's (e.g. `fn_get` / `fn_get_all`), stopping blindly at the first
+  completed option would make the longer name unreachable. `choose()`
+  handles this by also allowing a closing-quote token once a complete
+  option has been matched, so the model itself decides whether the name
+  stops there or continues toward the longer one.
 - In `gen_number`, the token that ends the loop (a comma, `}`, space, or
   newline) is only ever used as a stop *signal* — `if token in
   self.vocab.end_ids: break` happens before `_emit()` would append it. It is
@@ -321,9 +338,10 @@ functions, CPU only):
 - This machine has no NVIDIA GPU/driver, but the default PyPI `torch` wheel
   is the CUDA build, which preloads its bundled CUDA runtime `.so` files at
   import time via `ctypes.CDLL` — on a cold disk cache this can take tens of
-  seconds and looks exactly like a hang. `pyproject.toml` pins `torch` to
-  the CPU-only wheel index (`https://download.pytorch.org/whl/cpu`) via
-  `[tool.uv.sources]`/`[[tool.uv.index]]`, which skips that step entirely.
+  seconds and looks exactly like a hang. Recognizing that the pause was
+  wheel loading rather than the pipeline avoided chasing a phantom bug:
+  inference falls back to CPU automatically, and the shared cache directory
+  set up in the Makefile keeps warm runs fast.
 
 ## Testing Strategy
 

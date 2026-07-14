@@ -8,19 +8,15 @@ from pydantic import BaseModel, Field
 
 
 class TrieNode(BaseModel):
-    """One node of a token trie: children keyed by token id, plus a
-    value.
+    """One node of a token trie.
 
     Attributes:
         children: Child nodes keyed by the next token id.
         value: The option string this node completes, if any.
-        end: Whether this node is the end of at least one inserted
-            option (a closing quote may legally follow here).
     """
 
     children: Dict[int, "TrieNode"] = Field(default_factory=dict)
     value: Optional[str] = None
-    end: bool = False
 
 
 class Trie(BaseModel):
@@ -34,11 +30,11 @@ class Trie(BaseModel):
     root: TrieNode = Field(default_factory=TrieNode)
 
     def insert(self, ids: List[int], value: str) -> None:
-        """Insert one token-id path ending in `value`.
+        """Insert one option into the trie.
 
         Args:
-            ids: The sequence of token ids that spell out `value`.
-            value: The option string this path represents.
+            ids: The token-id path encoding the option, in order.
+            value: The option string stored on the path's final node.
 
         Returns:
             None.
@@ -49,4 +45,3 @@ class Trie(BaseModel):
                 node.children[token_id] = TrieNode()
             node = node.children[token_id]
         node.value = value
-        node.end = True

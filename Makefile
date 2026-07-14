@@ -1,10 +1,11 @@
 SRC_DIR = src
 
-# Use 42's per-user /goinfre cache when available (bigger quota than $HOME);
-# fall back to a plain home cache dir on any other machine.
 CACHE_DIR := $(if $(wildcard /goinfre/.),/goinfre/$(or $(USER),$(shell whoami)),$(HOME)/.cache/call-me-maybe)
 UV_ENV = UV_CACHE_DIR="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
 HF_ENV = HF_HOME="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
+LINT_ENV = $(UV_ENV) MYPY_CACHE_DIR="$(CACHE_DIR)/.mypy_cache"
+
+.PHONY: all install run debug clean fclean cache-clean lint lint-strict
 
 all: install run
 
@@ -22,18 +23,15 @@ clean:
 	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
 	@rm -rf data/output
 
-fclean:
-	@find . -type d -name "__pycache__" -exec rm -rf {} +
-	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
-	@rm -rf data/output
+fclean: clean
 	@rm -rf .venv
 
 cache-clean:
 	@rm -rf $(CACHE_DIR)
 
 lint:
-	@$(UV_ENV) uv run flake8 .
-	@$(UV_ENV) uv run mypy . \
+	@$(LINT_ENV) uv run flake8 .
+	@$(LINT_ENV) uv run mypy . \
 		--warn-return-any \
 		--warn-unused-ignores \
 		--ignore-missing-imports \
@@ -41,5 +39,5 @@ lint:
 		--check-untyped-defs
 
 lint-strict:
-	@$(UV_ENV) uv run flake8 .
-	@$(UV_ENV) uv run mypy . --strict
+	@$(LINT_ENV) uv run flake8 .
+	@$(LINT_ENV) uv run mypy . --strict

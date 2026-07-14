@@ -61,8 +61,7 @@
         "type": "string"
       },
       "replacement": {
-        "type": "null",
-        "type2": "dasdasd"
+        "type": "null"
       }
     },
     "returns": {
