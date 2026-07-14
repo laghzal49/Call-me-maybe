@@ -2,7 +2,7 @@ SRC_DIR = src
 
 # Use 42's per-user /goinfre cache when available (bigger quota than $HOME);
 # fall back to a plain home cache dir on any other machine.
-CACHE_DIR := $(if $(wildcard /goinfre/.),/goinfre/$(USER),$(HOME)/.cache/call-me-maybe)
+CACHE_DIR := $(if $(wildcard /goinfre/.),/goinfre/$(or $(USER),$(shell whoami)),$(HOME)/.cache/call-me-maybe)
 UV_ENV = UV_CACHE_DIR="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
 HF_ENV = HF_HOME="$(CACHE_DIR)" UV_PROJECT_ENVIRONMENT="$(CACHE_DIR)/.venv"
 
@@ -27,6 +27,9 @@ fclean:
 	@find . -type d -name ".mypy_cache" -exec rm -rf {} +
 	@rm -rf data/output
 	@rm -rf .venv
+
+cache-clean:
+	@rm -rf $(CACHE_DIR)
 
 lint:
 	@$(UV_ENV) uv run flake8 .

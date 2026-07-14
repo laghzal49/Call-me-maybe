@@ -1,3 +1,7 @@
+"""Wraps a model's tokenizer with encode/decode helpers and the
+token-id groups (digits, quotes, plain text, end-of-value markers)
+that the Decoder uses to mask logits during constrained decoding."""
+
 import json
 from typing import Dict, List, Optional
 
@@ -7,7 +11,14 @@ from llm_sdk import Small_LLM_Model
 
 
 def _load_vocab(path: str) -> Dict[str, int]:
-    """Load the token->id mapping from the model's vocab file."""
+    """Load the token->id mapping from the model's vocab file.
+
+    Args:
+        path: Path to the model's vocab JSON file.
+
+    Returns:
+        The token->id mapping.
+    """
     try:
         with open(path, encoding="utf-8") as file:
             vocab = json.load(file)
@@ -31,7 +42,19 @@ def _load_vocab(path: str) -> Dict[str, int]:
 class Vocab(BaseModel):
     """Wraps the model's tokenizer: encode/decode (with caching) plus
     the token-id groups derived from the vocab file, used to mask
-    logits during constrained decoding."""
+    logits during constrained decoding.
+
+    Attributes:
+        llm: The underlying model, used for encode/decode/logits.
+        digit_ids: Token ids whose text is entirely digits.
+        quote_ids: Token ids whose text contains a `"`.
+        plain_ids: Token ids whose text contains no `"`.
+        end_ids: Token ids for the characters that legally end a
+            number (",", "}", " ", "\\n").
+        dot_id: Token id for "." if present in the vocab, else None.
+        minus_id: Token id for "-" if present in the vocab, else
+            None.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -49,7 +72,14 @@ class Vocab(BaseModel):
 
     def __init__(self, llm: Small_LLM_Model) -> None:
         """Load the vocab file, derive the token-id groups, and let
-        pydantic validate them."""
+        pydantic validate them.
+
+        Args:
+            llm: The model whose vocab file and tokenizer to wrap.
+
+        Returns:
+            None.
+        """
         vocab = _load_vocab(llm.get_path_to_vocab_file())
 
         digit_ids = [
@@ -89,7 +119,15 @@ class Vocab(BaseModel):
         )
 
     def encode(self, text: str) -> List[int]:
-        """Encode text to a flat list of token ids."""
+        """Encode text to a flat list of token ids.
+
+        Args:
+            text: The text to tokenize. Repeated calls with the
+                same text are served from an internal cache.
+
+        Returns:
+            The list of token ids for `text`.
+        """
         cached = self._encode_cache.get(text)
         if cached is not None:
             return list(cached)
@@ -98,5 +136,12 @@ class Vocab(BaseModel):
         return list(ids)
 
     def decode(self, ids: List[int]) -> str:
-        """Decode a list of token ids back to text."""
+        """Decode a list of token ids back to text.
+
+        Args:
+            ids: The token ids to decode.
+
+        Returns:
+            The decoded text.
+        """
         return self.llm.decode(ids)
