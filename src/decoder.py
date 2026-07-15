@@ -190,7 +190,9 @@ class Decoder(BaseModel):
             ValueError: If `options` is empty.
         """
         if not options:
-            raise ValueError("Error: choose() needs at least one option")
+            raise ValueError(
+                "Error: choose() needs at least one option"
+            )
 
         trie = Trie()
         for option in options:
@@ -203,7 +205,11 @@ class Decoder(BaseModel):
             allowed = sorted(node.children)
             if node.value is not None:
                 allowed += self.vocab.quote_ids
-            token = allowed[0] if len(allowed) == 1 else self.pick(allowed)
+            token = (
+                allowed[0]
+                if len(allowed) == 1
+                else self.pick(allowed)
+            )
             if node.value is not None and token not in node.children:
                 return node.value
             self.ids.append(token)
@@ -222,7 +228,9 @@ class Decoder(BaseModel):
         """
         text = ""
         for _ in range(MAX_STRING_TOKENS):
-            token = self.pick(self.vocab.quote_ids + self.vocab.plain_ids)
+            token = self.pick(
+                self.vocab.quote_ids + self.vocab.plain_ids
+            )
             if token in self.vocab.quote_ids:
                 chunk = self.vocab.decode([token])
                 index = _unescaped_quote_index(text, chunk)
@@ -238,10 +246,6 @@ class Decoder(BaseModel):
                 chunk = chunk.lstrip(" ")
             text += chunk
         else:
-            # Token budget exhausted mid-string: an odd trailing
-            # backslash would escape the closing quote gen_value()
-            # appends next and leave the context inside an
-            # unterminated string.
             if _trailing_backslashes(text) % 2:
                 self.add("\\")
         return _json_unescape(text)
@@ -345,4 +349,8 @@ class Decoder(BaseModel):
             self.log(f"{key} = {parameters[key]!r}")
         self.add("}}")
 
-        return {"prompt": prompt, "name": name, "parameters": parameters}
+        return {
+            "prompt": prompt,
+            "name": name,
+            "parameters": parameters,
+        }
