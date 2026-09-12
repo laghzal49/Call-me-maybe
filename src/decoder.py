@@ -148,9 +148,16 @@ class Decoder(BaseModel):
         logits = np.array(
             self.vocab.llm.get_logits_from_input_ids(self.ids)
         )
-        masked = np.full(len(logits), -np.inf)
-        masked[allowed] = logits[allowed]
-        token = int(np.argmax(masked))
+        candidates = sorted(set(allowed))
+        if logits.ndim != 1 or any(
+            token < 0 or token >= len(logits) for token in candidates
+        ):
+            raise ValueError("Error: invalid logits or allowed token ids")
+        scores = logits[candidates]
+        finite = np.isfinite(scores)
+        if not finite.any():
+            raise ValueError("Error: no finite logits for allowed tokens")
+        token = candidates[int(np.argmax(np.where(finite, scores, -np.inf)))]
         self.log(
             f"pick: {len(allowed)} allowed token(s) -> chose id {token} "
             f"({self.vocab.decode([token])!r})"
@@ -226,29 +233,23 @@ class Decoder(BaseModel):
         Returns:
             The unescaped string content chosen by the model.
         """
+        start = len(self.ids)
         text = ""
         for _ in range(MAX_STRING_TOKENS):
             token = self.pick(
                 self.vocab.quote_ids + self.vocab.plain_ids
             )
-            if token in self.vocab.quote_ids:
-                chunk = self.vocab.decode([token])
-                index = _unescaped_quote_index(text, chunk)
-                if index is not None:
-                    self.log("stop string: closing quote won")
-                    head = chunk[:index]
-                    if head:
-                        text += head
-                        self.add(head)
-                    break
-            chunk = self._emit(token)
-            if not text:
-                chunk = chunk.lstrip(" ")
-            text += chunk
-        else:
-            if _trailing_backslashes(text) % 2:
-                self.add("\\")
-        return _json_unescape(text)
+            candidate = self.vocab.decode(self.ids[start:] + [token])
+            index = _unescaped_quote_index("", candidate)
+            if index is not None:
+                text = candidate[:index]
+                break
+            self.ids.append(token)
+            text = candidate
+        value = _json_unescape(text)
+        self.ids = self.ids[:start]
+        self.add(json.dumps(value)[1:-1])
+        return value
 
     def gen_number(self, integer_only: bool) -> int | float:
         """Generate one JSON number value.
@@ -266,6 +267,7 @@ class Decoder(BaseModel):
         Returns:
             The parsed number, or 0 if no digit was ever produced.
         """
+        start = len(self.ids)
         text = ""
         for _ in range(MAX_NUMBER_TOKENS):
             allowed = list(self.vocab.digit_ids)
@@ -283,9 +285,13 @@ class Decoder(BaseModel):
             if token in self.vocab.end_ids:
                 break
             text += self._emit(token)
-        if not any(char.isdigit() for char in text):
-            return 0
-        return int(text) if integer_only else float(text)
+        value: int | float = 0
+        if any(char.isdigit() for char in text):
+            value = int(text) if integer_only else float(text)
+        encoded = json.dumps(value, allow_nan=False)
+        self.ids = self.ids[:start]
+        self.add(encoded)
+        return value
 
     def gen_value(self, schema: TypeSchema) -> Any:
         """Generate one value of the type declared by `schema`.
@@ -335,7 +341,8 @@ class Decoder(BaseModel):
         )
         self.ids = self.vocab.encode(header + '{"name": "')
 
-        name = self.choose(list(self.functions))
+        names = {json.dumps(name)[1:-1]: name for name in self.functions}
+        name = names[self.choose(list(names))]
         self.log(f"function = {name}")
 
         self.add('", "parameters": {')

@@ -37,6 +37,8 @@ def _load_vocab(path: str) -> Dict[str, int]:
         raise ValueError(
             "Error: vocab file must contain a non-empty token->id object"
         )
+    if any(type(value) is not int or value < 0 for value in vocab.values()):
+        raise ValueError("Error: vocab ids must be non-negative integers")
     return vocab
 
 
@@ -83,7 +85,8 @@ class Vocab(BaseModel):
         """
         vocab = _load_vocab(llm.get_path_to_vocab_file())
 
-        digit_ids = [i for token, i in vocab.items() if token.isdigit()]
+        digit_ids = [i for token, i in vocab.items()
+                     if token.isascii() and token.isdigit()]
         quote_ids = [i for token, i in vocab.items() if '"' in token]
         plain_ids = [i for token, i in vocab.items() if '"' not in token]
         if not digit_ids:

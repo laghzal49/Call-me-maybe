@@ -374,3 +374,18 @@ end, against the real model on every change:
   debugging help, code review, and polishing this README. The design,
   implementation, and final decisions are my own, and every change was
   tested end-to-end before being kept.
+
+### Offline regression tests
+
+After installing the project dependencies, run:
+
+```sh
+python -m unittest discover -s tests
+```
+
+These tests use a fake model and byte tokenizer, so they do not download model
+weights. They cover JSON escaping, Unicode and leading spaces, numeric context,
+invalid logits/vocabulary IDs, empty input, and partial batch failures.
+Successful results are still written when another prompt fails, but the CLI
+exits with status 1 so scripts can detect the incomplete batch. Empty input
+writes an empty JSON list without loading a model.

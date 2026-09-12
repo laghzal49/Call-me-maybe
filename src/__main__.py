@@ -75,7 +75,7 @@ def main() -> None:
 
     Returns:
         None. Exits the process with status 1 on a fatal error;
-        a failure on one prompt is logged and skipped instead.
+        failed prompts are skipped, then status 1 reports partial failure.
     """
     args = parse_args()
     try:
@@ -84,6 +84,15 @@ def main() -> None:
     except ValueError as error:
         print(error, file=sys.stderr)
         sys.exit(1)
+
+    if not prompts:
+        try:
+            write_results(args.output, [])
+        except OSError as error:
+            print(f"Error: cannot write {args.output}: {error}",
+                  file=sys.stderr)
+            sys.exit(1)
+        return
 
     start = time.time()
     try:
@@ -117,6 +126,8 @@ def main() -> None:
 
     elapsed = time.time() - start
     print(f"[*] Done: {len(results)}/{len(prompts)} in {elapsed:.1f}s")
+    if len(results) != len(prompts):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
